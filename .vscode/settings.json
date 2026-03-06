@@ -1,0 +1,29 @@
+{
+  "python.defaultInterpreterPath": "/home/fuhua/IsaacLab/_isaac_sim/kit/python/bin/python3",
+  "python.analysis.extraPaths": [
+    "/home/fuhua/IsaacLab/source/isaaclab",
+    "/home/fuhua/IsaacLab/source/isaaclab/isaaclab",
+    "/home/fuhua/IsaacLab/source/isaaclab_assets",
+    "/home/fuhua/IsaacLab/source/isaaclab_assets/isaaclab_assets",
+    "/home/fuhua/IsaacLab/source/isaaclab_rl",
+    "/home/fuhua/IsaacLab/source/isaaclab_rl/isaaclab_rl",
+    "/home/fuhua/IsaacLab/source/isaaclab_tasks",
+    "/home/fuhua/IsaacLab/source/isaaclab_tasks/isaaclab_tasks",
+    "/home/fuhua/IsaacLab/source/isaaclab_mimic",
+    "/home/fuhua/IsaacLab/source/isaaclab_mimic/isaaclab_mimic",
+  ],
+  "python.autoComplete.extraPaths": [
+    "/home/fuhua/IsaacLab/source/isaaclab",
+    "/home/fuhua/IsaacLab/source/isaaclab/isaaclab",
+    "/home/fuhua/IsaacLab/source/isaaclab_assets",
+    "/home/fuhua/IsaacLab/source/isaaclab_assets/isaaclab_assets",
+    "/home/fuhua/IsaacLab/source/isaaclab_rl",
+    "/home/fuhua/IsaacLab/source/isaaclab_rl/isaaclab_rl",
+    "/home/fuhua/IsaacLab/source/isaaclab_tasks",
+    "/home/fuhua/IsaacLab/source/isaaclab_tasks/isaaclab_tasks",
+    "/home/fuhua/IsaacLab/source/isaaclab_mimic",
+    "/home/fuhua/IsaacLab/source/isaaclab_mimic/isaaclab_mimic",
+  ],
+  "python.languageServer": "Pylance",
+  "python.analysis.typeCheckingMode": "basic"
+}
