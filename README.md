@@ -200,7 +200,7 @@ $$
 
 ```bash
 # 进入脚本目录（重要：cli_args.py 的相对导入依赖此工作目录）
-cd /home/fuhua/Projects/Mastiff/scripts/rsl_rl
+cd <path-to-project>/Mastiff/scripts/rsl_rl
 ```
 
 ### 5.1 训练
