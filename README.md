@@ -203,34 +203,39 @@ $$
 cd <path-to-project>/Mastiff/scripts/rsl_rl
 ```
 
+加载isaacLab环境
+```
+source whatever_the_env_is_located/bin/activate
+```
+
 ### 5.1 训练
 
 **平地任务（入门推荐）：**
 
 ```bash
 # 无窗口训练，4096 个并行环境
-isaactrain.py --task mastiff-flat-v0 --headless --num_envs 4096
+python3 train.py --task mastiff-flat-v0 --headless --num_envs 4096
 
 # 较少环境，用于调试（可以开窗口观察）
-isaactrain.py --task mastiff-flat-v0 --num_envs 256
+python3 train.py --task mastiff-flat-v0 --num_envs 256
 ```
 
 **地形任务（含课程学习）：**
 
 ```bash
-isaactrain.py --task mastiff-terrain-v0 --headless --num_envs 4096
+python3 train.py --task mastiff-terrain-v0 --headless --num_envs 4096
 ```
 
 **从 Checkpoint 续训：**
 
 ```bash
-isaactrain.py --task mastiff-terrain-v0 --headless --num_envs 4096 --resume
+python3 train.py --task mastiff-terrain-v0 --headless --num_envs 4096 --resume
 ```
 
 **指定最大迭代轮数：**
 
 ```bash
-isaactrain.py --task mastiff-flat-v0 --headless --num_envs 4096 --max_iterations 3000
+python3 train.py --task mastiff-flat-v0 --headless --num_envs 4096 --max_iterations 3000
 ```
 
 **监控训练（TensorBoard）：**
@@ -252,14 +257,14 @@ tensorboard --logdir scripts/logs/rsl_rl/
 
 ```bash
 # 自动寻找最新 checkpoint
-isaacplay.py --task mastiff-terrain-v0 --num_envs 32
+python3 play.py --task mastiff-terrain-v0 --num_envs 32
 
 # 指定具体 checkpoint 文件
-isaacplay.py --task mastiff-terrain-v0 --num_envs 32 \
+python3 play.py --task mastiff-terrain-v0 --num_envs 32 \
     --checkpoint scripts/logs/rsl_rl/mastiff-terrain-v0/2026-02-26_15-27-50/model_2000.pt
 
 # 录制视频
-isaacplay.py --task mastiff-terrain-v0 --num_envs 4 --video --video_length 500
+python3 play.py --task mastiff-terrain-v0 --num_envs 4 --video --video_length 500
 ```
 
 > **提示**：回放时自动使用 `MastiffTerrainEnvCfg_PLAY` 配置，该配置自动减少到 32 个环境
