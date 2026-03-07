@@ -273,6 +273,7 @@ class RewardsCfg:
     #     weight=-0.25,
     #     params={
     #         "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Foot_.*"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="Foot_.*"),
     #     },
     # )
 
