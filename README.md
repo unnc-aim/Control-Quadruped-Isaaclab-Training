@@ -322,9 +322,9 @@ ManagerBasedRLEnvCfg
 | `joint_pos_rel`             | 12   | 关节位置相对默认姿态的偏差           |
 | `joint_vel_rel`             | 12   | 关节速度                             |
 | `last_action`               | 4    | 上一时刻的 CPG 参数动作（历史信息）  |
-| `height_scan`（仅地形任务） | 169  | 高度扫描图（13×13，分辨率 0.2m）    |
+| `height_scan`（critic-only）| 169  | 高度扫描图（13×13，分辨率 0.2m）    |
 
-**总计**：平地任务约 **40 维**，地形任务约 **209 维**。
+**总计**：actor 约 **40 维**（仅本体运动学信息），critic 约 **209 维**（含 `height_scan` 特权信息）。
 
 > **自定义观测**：在 `tasks/mdp/observations.py` 中定义函数，
 > 签名为 `def my_obs(env: ManagerBasedRLEnv, ...) -> torch.Tensor`，

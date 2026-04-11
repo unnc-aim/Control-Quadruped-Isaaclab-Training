@@ -17,7 +17,7 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = True
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
-        hidden_dims=[128, 64, 32],
+        hidden_dims=[512, 256, 128],
         activation="elu",
         obs_normalization=True,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
@@ -50,7 +50,7 @@ class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 100
     experiment_name = "mastiff-terrain-v0"
     empirical_normalization = True
-    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
         activation="elu",
