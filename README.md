@@ -321,10 +321,10 @@ ManagerBasedRLEnvCfg
 | `generated_commands`        | 3    | 目标速度指令$(v_x, v_y, \omega_z)$ |
 | `joint_pos_rel`             | 12   | 关节位置相对默认姿态的偏差           |
 | `joint_vel_rel`             | 12   | 关节速度                             |
-| `last_action`               | 12   | 上一时刻的动作（历史信息）           |
+| `last_action`               | 4    | 上一时刻的 CPG 参数动作（历史信息）  |
 | `height_scan`（仅地形任务） | 169  | 高度扫描图（13×13，分辨率 0.2m）    |
 
-**总计**：平地任务约 **48 维**，地形任务约 **217 维**。
+**总计**：平地任务约 **40 维**，地形任务约 **209 维**。
 
 > **自定义观测**：在 `tasks/mdp/observations.py` 中定义函数，
 > 签名为 `def my_obs(env: ManagerBasedRLEnv, ...) -> torch.Tensor`，
@@ -333,15 +333,14 @@ ManagerBasedRLEnvCfg
 ### 6.3 动作 Actions
 
 ```python
-joint_pos = mdp.JointPositionActionCfg(
+cpg = CPGPositionActionCfg(
     asset_name="robot",
-    joint_names=[".*"],   # 正则匹配所有 12 个关节
-    scale=0.5,            # 动作缩放：策略输出 ∈ [-1, 1] → 关节增量 ∈ [-0.5, 0.5] rad
-    use_default_offset=True,  # 动作叠加在默认关节角度上
+    joint_names=[".*"],
+    # policy 输出 4 维: [step_height, step_length, frequency, turn_rate]
 )
 ```
 
-最终发送给关节的目标位置：$q_{des} = q_{default} + \text{scale} \times a_t$
+策略不再直接输出 12 个关节角，而是输出 CPG 轨迹参数；动作项在每个物理步内通过预规划轨迹 + IK 生成各关节位置目标，从而显著缩小搜索空间。
 
 ### 6.4 奖励 Rewards
 

@@ -20,6 +20,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
+from .mdp import CPGPositionActionCfg
 ##
 # Pre-defined configs
 ##
@@ -55,6 +56,14 @@ class MySceneCfg(InteractiveSceneCfg):
         init_state=_ROBOT_CONFIG.init_state.replace(
             pos=(0.0, 0.0, 0.2),
         ),
+    )
+    height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/Mastiff/Body_v1",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.2, size=(2.5, 2.5)),
+        debug_vis=False,
+        mesh_prim_paths=["/World/GroundPlane"],
     )
     contact_sensor = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Mastiff/.*",
@@ -92,11 +101,55 @@ class CommandsCfg:
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
-    joint_pos = mdp.JointPositionActionCfg(
+    cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=0.5,
-        use_default_offset=True,
+        step_height=0.035,
+        step_length=0.06,
+        step_frequency=1.2,
+        step_direction=1.0,
+        step_height_min=0.0,
+        step_height_max=0.08,
+        step_length_min=0.0,
+        step_length_max=0.12,
+        step_frequency_min=0.0,
+        step_frequency_max=3.0,
+        center_offset=0.12,
+        ground_height=-0.07,
+        legs_config={
+            "FL": {
+                "coxa": "HAA_FRONT_LEFT",
+                "femur": "HFE_FRONT_LEFT",
+                "tibia": "KFE_FRONT_LEFT",
+                "body_angle": -45.0,
+                "phase_offset_deg": 0.0,
+                "side": "left",
+            },
+            "FR": {
+                "coxa": "HAA_FRONT_RIGHT",
+                "femur": "HFE_FRONT_RIGHT",
+                "tibia": "KFE_FRONT_RIGHT",
+                "body_angle": 45.0,
+                "phase_offset_deg": 180.0,
+                "side": "right",
+            },
+            "RL": {
+                "coxa": "HAA_REAR_LEFT",
+                "femur": "HFE_REAR_LEFT",
+                "tibia": "KFE_REAR_LEFT",
+                "body_angle": -135.0,
+                "phase_offset_deg": 180.0,
+                "side": "left",
+            },
+            "RR": {
+                "coxa": "HAA_REAR_RIGHT",
+                "femur": "HFE_REAR_RIGHT",
+                "tibia": "KFE_REAR_RIGHT",
+                "body_angle": 135.0,
+                "phase_offset_deg": 0.0,
+                "side": "right",
+            },
+        },
     )
 
 
@@ -121,8 +174,31 @@ class ObservationsCfg:
             self.enable_corruption = True
             self.concatenate_terms = True
 
+    @configclass
+    class CriticCfg(ObsGroup):
+        """Observations for critic group."""
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
+        base_orientation = ObsTerm(func=mdp.projected_gravity)
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands, params={"command_name": "base_velocity"}
+        )
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        actions = ObsTerm(func=mdp.last_action)
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            noise=Unoise(n_min=-0.001, n_max=0.001),
+            clip=(-1.0, 1.0),
+        )
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
     # observation groups
     policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
 
 
 @configclass
@@ -261,4 +337,6 @@ class MastiffFlatEnvCfg(ManagerBasedRLEnvCfg):
         # sensor update periods
         if self.scene.contact_sensor is not None:
             self.scene.contact_sensor.update_period = self.sim.dt
+        if self.scene.height_scanner is not None:
+            self.scene.height_scanner.update_period = self.sim.dt * 2
         

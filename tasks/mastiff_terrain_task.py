@@ -21,6 +21,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise, AdditiveGaus
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
 from .mdp.terrain_cfg import PhantomX_ROUGH_TERRAINS_CFG
+from .mdp import CPGPositionActionCfg
 
 ##
 # Pre-defined configs
@@ -123,11 +124,55 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(
+    cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=0.5,
-        use_default_offset=True,
+        step_height=0.035,
+        step_length=0.06,
+        step_frequency=1.2,
+        step_direction=1.0,
+        step_height_min=0.0,
+        step_height_max=0.08,
+        step_length_min=0.0,
+        step_length_max=0.12,
+        step_frequency_min=0.0,
+        step_frequency_max=3.0,
+        center_offset=0.12,
+        ground_height=-0.07,
+        legs_config={
+            "FL": {
+                "coxa": "HAA_FRONT_LEFT",
+                "femur": "HFE_FRONT_LEFT",
+                "tibia": "KFE_FRONT_LEFT",
+                "body_angle": -45.0,
+                "phase_offset_deg": 0.0,
+                "side": "left",
+            },
+            "FR": {
+                "coxa": "HAA_FRONT_RIGHT",
+                "femur": "HFE_FRONT_RIGHT",
+                "tibia": "KFE_FRONT_RIGHT",
+                "body_angle": 45.0,
+                "phase_offset_deg": 180.0,
+                "side": "right",
+            },
+            "RL": {
+                "coxa": "HAA_REAR_LEFT",
+                "femur": "HFE_REAR_LEFT",
+                "tibia": "KFE_REAR_LEFT",
+                "body_angle": -135.0,
+                "phase_offset_deg": 180.0,
+                "side": "left",
+            },
+            "RR": {
+                "coxa": "HAA_REAR_RIGHT",
+                "femur": "HFE_REAR_RIGHT",
+                "tibia": "KFE_REAR_RIGHT",
+                "body_angle": 135.0,
+                "phase_offset_deg": 0.0,
+                "side": "right",
+            },
+        },
     )
 
 
