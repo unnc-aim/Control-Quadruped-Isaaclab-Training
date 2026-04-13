@@ -83,7 +83,7 @@ class CommandsCfg:
     # """Command specifications for the MDP."""
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 20.0),
+        resampling_time_range=(20.0, 30.0),
         rel_standing_envs=0.02,
         rel_heading_envs=1.0,
         heading_command=True,
@@ -224,7 +224,7 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    # alive = RewTerm(func=mdp.is_alive, weight=1.0)
+    alive = RewTerm(func=mdp.is_alive, weight=1e-2)
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
         weight=5.0,
@@ -232,7 +232,7 @@ class RewardsCfg:
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=0.0,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     feet_air_time = RewTerm(
@@ -259,6 +259,32 @@ class RewardsCfg:
         func=mdp.base_height_l2, weight=-1.0, params={"target_height": 0.40}
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
+
+    undesired_hip_contact = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-50.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Hip_.*"),
+            "threshold": 1.0,
+        },
+    )
+
+    undesired_base_contact = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-50.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Body_v1"),
+            "threshold": 1.0,
+        },
+    )
+    undesired_thigh_contact = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-2.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
+            "threshold": 1.0,
+        },
+    )
     
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-5)
@@ -278,21 +304,21 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Body_v1"),
-            "threshold": 1.0,
+            "threshold": 10.0,
         },
     )
     hip_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Hip_.*"),
-            "threshold": 1.0,
+            "threshold": 10.0,
         },
     )
     thigh_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
-            "threshold": 1.0,
+            "threshold": 500.0,
         },
     )
 
