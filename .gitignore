@@ -4,3 +4,4 @@ logs/
 **/logs
 **/*.pyc
 __pycache__/
+scripts/rsl_rl/logs/*
