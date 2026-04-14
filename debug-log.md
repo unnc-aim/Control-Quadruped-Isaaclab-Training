@@ -7,10 +7,10 @@ by Calciiite 2026/04
 
 迷思之一：在刚开始训练的时候，illegal contact是应该给出penalty还是termination？
 
-如果只给penalty，agent最后很可能收敛到一个很诡异的步态，在illegal contanct的情况下进行移动（区一般蠕动）
+如果只给penalty，agent最后很可能收敛到一个很诡异的步态，在illegal contanct的情况下进行移动（区一般蠕动或者几乎不动）
 如果给termination，mean-ep-length很可能会持续的保持在很少的step，在这种情况下即使env=4096，获得的数据也会很有限，可能会导致收敛缓慢
 
-关于很少的step的定义：经验来看，至少如果mean_ep_length只有2-3的话，获得的data是不够agent在~100个iterations里取得任何成长的（表现就是reward和length都不变），不确定scale到3k ep时会不会有差别。
+关于很少的step的定义：经验来看，至少如果mean_ep_length只有2-3的话，获得的data是不够agent在~100个iterations里取得任何成长的（表现就是reward和length都不变），不确定scale到3k ep时会不会有差别，或许值得测试一下。
 
 如果先only penalty再进行后序的加入termination的训练呢？
 

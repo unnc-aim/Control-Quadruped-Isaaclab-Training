@@ -84,7 +84,7 @@ class CommandsCfg:
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(20.0, 30.0),
-        rel_standing_envs=0.02,
+        rel_standing_envs=0.0,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
@@ -224,24 +224,25 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
-    alive = RewTerm(func=mdp.is_alive, weight=1e-2)
+    # Avoid "free" survival reward that can trap policy in crouching local optimum.
+    alive = RewTerm(func=mdp.is_alive, weight=0.0)
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
-        weight=5.0,
+        weight=8.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=1.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     feet_air_time = RewTerm(
         func=mdp.feet_air_time,
-        weight=2.0,
+        weight=2.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Foot_.*"),
             "command_name": "base_velocity",
-            "threshold": 0.5,
+            "threshold": 0.2,
         },
     )
     # -- penalties
@@ -256,7 +257,7 @@ class RewardsCfg:
         },
     )
     base_height_l2 = RewTerm(
-        func=mdp.base_height_l2, weight=-1.0, params={"target_height": 0.40}
+        func=mdp.base_height_l2, weight=-8.0, params={"target_height": 0.62}
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
 
@@ -279,7 +280,7 @@ class RewardsCfg:
     )
     undesired_thigh_contact = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-2.0,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
             "threshold": 1.0,
@@ -287,8 +288,8 @@ class RewardsCfg:
     )
     
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-5)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-6)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
     # -- optional penalties
     # dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
 
@@ -304,21 +305,21 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Body_v1"),
-            "threshold": 10.0,
+            "threshold": 1.0,
         },
     )
     hip_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Hip_.*"),
-            "threshold": 10.0,
+            "threshold": 1.0,
         },
     )
     thigh_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
-            "threshold": 500.0,
+            "threshold": 1.0,
         },
     )
 
