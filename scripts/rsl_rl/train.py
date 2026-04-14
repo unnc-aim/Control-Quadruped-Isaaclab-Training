@@ -32,6 +32,24 @@ parser.add_argument(
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
 parser.add_argument(
+    "--export_onnx",
+    action="store_true",
+    default=False,
+    help="Export ONNX every time a checkpoint is saved.",
+)
+parser.add_argument(
+    "--export_openvino",
+    action="store_true",
+    default=False,
+    help="Export OpenVINO IR every time a checkpoint is saved (requires --export_onnx_on_save).",
+)
+parser.add_argument(
+    "--openvino_fp16",
+    action="store_true",
+    default=False,
+    help="When exporting OpenVINO IR, also save fp16-compressed weights.",
+)
+parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
 # append RSL-RL cli arguments
@@ -93,7 +111,12 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
+from isaaclab_rl.rsl_rl import (
+    RslRlBaseRunnerCfg,
+    RslRlVecEnvWrapper,
+    export_policy_as_onnx,
+    handle_deprecated_rsl_rl_cfg,
+)
 
 import sys
 from pathlib import Path
@@ -113,6 +136,76 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+
+def _export_policy_onnx(runner, export_dir: str):
+    os.makedirs(export_dir, exist_ok=True)
+    if version.parse(installed_version) >= version.parse("4.0.0"):
+        runner.export_policy_to_onnx(path=export_dir, filename="policy.onnx")
+        return
+
+    if version.parse(installed_version) >= version.parse("2.3.0"):
+        policy_nn = runner.alg.policy
+    else:
+        policy_nn = runner.alg.actor_critic
+
+    if hasattr(policy_nn, "actor_obs_normalizer"):
+        normalizer = policy_nn.actor_obs_normalizer
+    elif hasattr(policy_nn, "student_obs_normalizer"):
+        normalizer = policy_nn.student_obs_normalizer
+    else:
+        normalizer = None
+    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_dir, filename="policy.onnx")
+
+
+def _export_openvino_from_onnx(onnx_path: str, export_dir: str, fp16: bool):
+    try:
+        import openvino as ov
+    except ImportError as exc:
+        raise RuntimeError(
+            "OpenVINO export requested but `openvino` is not installed. "
+            "Install it with: pip install openvino"
+        ) from exc
+
+    model = ov.convert_model(onnx_path)
+    xml_path = os.path.join(export_dir, "policy.xml")
+    ov.save_model(model, xml_path, compress_to_fp16=fp16)
+
+
+def _install_checkpoint_export_hook(runner, log_dir: str):
+    if not args_cli.export_onnx and not args_cli.export_openvino:
+        return
+    if args_cli.export_openvino and not args_cli.export_onnx:
+        raise ValueError("--export_openvino requires --export_onnx.")
+
+    original_save = runner.save
+
+    def save_with_export(*args, **kwargs):
+        result = original_save(*args, **kwargs)
+
+        checkpoint_path = None
+        if args and isinstance(args[0], str):
+            checkpoint_path = args[0]
+        elif isinstance(kwargs.get("path"), str):
+            checkpoint_path = kwargs["path"]
+
+        if checkpoint_path is not None:
+            ckpt_stem = Path(checkpoint_path).stem
+            export_dir = os.path.join(os.path.dirname(checkpoint_path), "exported", ckpt_stem)
+        else:
+            export_dir = os.path.join(log_dir, "exported", "latest")
+
+        if args_cli.export_onnx:
+            _export_policy_onnx(runner, export_dir)
+            if args_cli.export_openvino:
+                _export_openvino_from_onnx(
+                    onnx_path=os.path.join(export_dir, "policy.onnx"),
+                    export_dir=export_dir,
+                    fp16=args_cli.openvino_fp16,
+                )
+        return result
+
+    runner.save = save_with_export
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -203,6 +296,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+    _install_checkpoint_export_hook(runner, log_dir)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
