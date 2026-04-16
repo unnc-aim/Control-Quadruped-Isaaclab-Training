@@ -262,7 +262,7 @@ class RewardsCfg:
     gait_diagonal_symmetry = RewTerm(
         func=custom_mdp.diagonal_gait_symmetry,
         # Gait timing is encoded by CPG phase settings; keep this term off by default.
-        weight=0.0,
+        weight=2.0,
         params={
             # FL/RR
             "fl_rr_cfg": SceneEntityCfg(
