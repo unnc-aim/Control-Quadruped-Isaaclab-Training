@@ -33,6 +33,10 @@ _PROJECT_PATH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_PATH))
 from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
 
+# Height-related defaults for easier tuning.
+DESIRED_BASE_HEIGHT_M = 0.52
+CPG_GROUND_HEIGHT_M = -0.09
+
 ##
 # Scene definition
 ##
@@ -74,7 +78,7 @@ class MyTerrainSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=_ROBOT_CONFIG.spawn.replace(activate_contact_sensors=True),
         init_state=_ROBOT_CONFIG.init_state.replace(
-            pos=(0.0, 0.0, 0.6),
+            pos=(0.0, 0.0, DESIRED_BASE_HEIGHT_M),
         ),
     )
 
@@ -137,8 +141,17 @@ class ActionsCfg:
         step_length_max=0.12,
         step_frequency_min=0.0,
         step_frequency_max=3.0,
+        command_name="base_velocity",
+        command_speed_to_step_length=0.07,
+        command_speed_to_frequency=0.1,
+        command_ang_vel_to_turn_rate=1.0,
+        yaw_step_length_max=0.04,
+        step_height_residual_scale=0.008,
+        step_length_residual_scale=0.012,
+        step_frequency_residual_scale=0.2,
+        turn_rate_residual_scale=0.1,
         center_offset=0.12,
-        ground_height=-0.07,
+        ground_height=CPG_GROUND_HEIGHT_M,
         legs_config={
             "FL": {
                 "coxa": "HAA_FRONT_LEFT",
@@ -347,7 +360,7 @@ class RewardsCfg:
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-20.0,
-        params={"target_height": 0.65},
+        params={"target_height": DESIRED_BASE_HEIGHT_M},
     )
 
     # 关节加速度：平滑关节运动，抑制抽搐/急停急走

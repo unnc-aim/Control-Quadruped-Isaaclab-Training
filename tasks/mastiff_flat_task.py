@@ -21,6 +21,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
 from .mdp import CPGPositionActionCfg
+from . import mdp as custom_mdp
 ##
 # Pre-defined configs
 ##
@@ -30,6 +31,10 @@ from pathlib import Path
 _PROJECT_PATH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_PATH))
 from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
+
+# Height-related defaults for easier tuning.
+DESIRED_BASE_HEIGHT_M = 0.52
+CPG_GROUND_HEIGHT_M = -0.50
 
 # Scene definition
 ##
@@ -54,7 +59,7 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=_ROBOT_CONFIG.spawn.replace(activate_contact_sensors=True),
         init_state=_ROBOT_CONFIG.init_state.replace(
-            pos=(0.0, 0.0, 0.2),
+            pos=(0.0, 0.0, DESIRED_BASE_HEIGHT_M),
         ),
     )
     height_scanner = RayCasterCfg(
@@ -114,8 +119,17 @@ class ActionsCfg:
         step_length_max=0.12,
         step_frequency_min=0.0,
         step_frequency_max=3.0,
+        command_name="base_velocity",
+        command_speed_to_step_length=0.07,
+        command_speed_to_frequency=0.1,
+        command_ang_vel_to_turn_rate=1.0,
+        yaw_step_length_max=0.04,
+        step_height_residual_scale=0.008,
+        step_length_residual_scale=0.012,
+        step_frequency_residual_scale=0.2,
+        turn_rate_residual_scale=0.1,
         center_offset=0.12,
-        ground_height=-0.07,
+        ground_height=CPG_GROUND_HEIGHT_M,
         legs_config={
             "FL": {
                 "coxa": "HAA_FRONT_LEFT",
@@ -245,6 +259,34 @@ class RewardsCfg:
             "threshold": 0.2,
         },
     )
+    gait_diagonal_symmetry = RewTerm(
+        func=custom_mdp.diagonal_gait_symmetry,
+        # Gait timing is encoded by CPG phase settings; keep this term off by default.
+        weight=0.0,
+        params={
+            # FL/RR
+            "fl_rr_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "HFE_FRONT_LEFT",
+                    "KFE_FRONT_LEFT",
+                    "HFE_REAR_RIGHT",
+                    "KFE_REAR_RIGHT",
+                ],
+            ),
+            # FR/RL
+            "fr_rl_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "HFE_FRONT_RIGHT",
+                    "KFE_FRONT_RIGHT",
+                    "HFE_REAR_LEFT",
+                    "KFE_REAR_LEFT",
+                ],
+            ),
+            "scale": 10.0,
+        },
+    )
     # -- penalties
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
@@ -257,7 +299,9 @@ class RewardsCfg:
         },
     )
     base_height_l2 = RewTerm(
-        func=mdp.base_height_l2, weight=-8.0, params={"target_height": 0.62}
+        func=mdp.base_height_l2,
+        weight=-10.0,
+        params={"target_height": DESIRED_BASE_HEIGHT_M},
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
 
@@ -280,7 +324,7 @@ class RewardsCfg:
     )
     undesired_thigh_contact = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-10.0,
+        weight=-15.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
             "threshold": 1.0,
@@ -319,7 +363,7 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Thigh.*"),
-            "threshold": 1.0,
+            "threshold": 500.0,
         },
     )
 

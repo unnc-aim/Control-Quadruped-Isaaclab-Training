@@ -39,18 +39,24 @@ class CPGPositionAction(ActionTerm):
         if self._num_joints == self._asset.num_joints:
             self._joint_ids = slice(None)
         
-        # Create tensors for raw and processed actions
-        # RL action dimension: [step_height_scale, step_length_scale, frequency_scale, turn_rate]
+        # Create tensors for raw and processed actions.
+        # RL action is residual over command-driven CPG parameters:
+        # [d_step_height, d_step_length, d_frequency, d_turn_rate]
         self._rl_action_dim = 4
         self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
         self._processed_actions = torch.zeros(self.num_envs, self._num_joints, device=self.device)
+        self._env = env
         
-        # RL-controlled CPG parameters (per environment)
-        # These will be updated by process_actions() based on RL output
+        # Final CPG parameters applied each step (command baseline + RL residual).
         self._rl_step_height = torch.full((self.num_envs,), cfg.step_height, device=self.device)
         self._rl_step_length = torch.full((self.num_envs,), cfg.step_length, device=self.device)
         self._rl_frequency = torch.full((self.num_envs,), cfg.step_frequency, device=self.device)
         self._rl_turn_rate = torch.zeros(self.num_envs, device=self.device)
+        # RL residuals are set in process_actions().
+        self._rl_step_height_residual = torch.zeros(self.num_envs, device=self.device)
+        self._rl_step_length_residual = torch.zeros(self.num_envs, device=self.device)
+        self._rl_frequency_residual = torch.zeros(self.num_envs, device=self.device)
+        self._rl_turn_rate_residual = torch.zeros(self.num_envs, device=self.device)
         
         # Parameter scaling ranges (for RL action mapping)
         # RL action [-1, 1] -> [0, 1] -> [min, max] for each parameter
@@ -172,11 +178,14 @@ class CPGPositionAction(ActionTerm):
 
         print(f"[CPGPositionAction] Initialized with {self._leg_count} legs configured")
         print(f"[CPGPositionAction] Default Freq={self.step_frequency}, Height={self.step_height}, Length={self.step_length}")
-        print(f"[CPGPositionAction] RL Action Dim={self._rl_action_dim} [height_scale, length_scale, freq_scale, turn_rate]")
+        print(
+            f"[CPGPositionAction] RL Action Dim={self._rl_action_dim} "
+            "[d_height, d_length, d_freq, d_turn] (residual over command)"
+        )
 
     @property
     def action_dim(self) -> int:
-        """RL action dimension: [step_height_scale, step_length_scale, frequency_scale, turn_rate]"""
+        """RL action dimension: [d_step_height, d_step_length, d_frequency, d_turn_rate]."""
         return self._rl_action_dim
 
     @property
@@ -189,38 +198,18 @@ class CPGPositionAction(ActionTerm):
 
     def process_actions(self, actions: torch.Tensor):
         """
-        Process RL actions and map them to CPG parameters.
-        
-        RL Policy typically outputs actions in [-1, 1] range.
-        
-        Action format: [step_height_action, step_length_action, frequency_action, turn_rate]
-        - step_height_action: [-1, 1] -> maps to [step_height_min, step_height_max]
-        - step_length_action: [-1, 1] -> maps to [step_length_min, step_length_max]
-        - frequency_action: [-1, 1] -> maps to [step_frequency_min, step_frequency_max]
-        - turn_rate: [-1, 1] -> used directly for differential turning
+        Process RL actions as residuals on top of command-driven CPG parameters.
+
+        Action format: [d_step_height, d_step_length, d_frequency, d_turn_rate] in [-1, 1].
+        Zero action means "no residual", i.e. pure command->CPG mapping.
         """
         self._raw_actions[:] = actions
-        
-        # Clamp all actions to [-1, 1]
-        height_action = torch.clamp(actions[:, 0], -1.0, 1.0)
-        length_action = torch.clamp(actions[:, 1], -1.0, 1.0)
-        freq_action = torch.clamp(actions[:, 2], -1.0, 1.0)
-        turn_rate = torch.clamp(actions[:, 3], -1.0, 1.0)
-        
-        # Map [-1, 1] to [0, 1] scale
-        height_scale = (height_action + 1.0) * 0.5
-        length_scale = (length_action + 1.0) * 0.5
-        freq_scale = (freq_action + 1.0) * 0.5
-        
-        # Map [0, 1] to parameter ranges
-        h_min, h_max = self._step_height_range
-        l_min, l_max = self._step_length_range
-        f_min, f_max = self._frequency_range
-        
-        self._rl_step_height = h_min + height_scale * (h_max - h_min)
-        self._rl_step_length = l_min + length_scale * (l_max - l_min)
-        self._rl_frequency = f_min + freq_scale * (f_max - f_min)
-        self._rl_turn_rate = turn_rate
+
+        action_clamped = torch.clamp(actions, -1.0, 1.0)
+        self._rl_step_height_residual = action_clamped[:, 0] * self.cfg.step_height_residual_scale
+        self._rl_step_length_residual = action_clamped[:, 1] * self.cfg.step_length_residual_scale
+        self._rl_frequency_residual = action_clamped[:, 2] * self.cfg.step_frequency_residual_scale
+        self._rl_turn_rate_residual = action_clamped[:, 3] * self.cfg.turn_rate_residual_scale
 
     def _compute_trajectory(
         self,
@@ -367,8 +356,52 @@ class CPGPositionAction(ActionTerm):
         if self._leg_count == 0:
             return
         
-        # Compute per-environment omega from RL-controlled frequency
-        # omega = 2 * pi * frequency, shape: (num_envs,)
+        if not hasattr(self._env, "command_manager"):
+            raise RuntimeError("CPGPositionAction requires env.command_manager for command-driven gait.")
+        command = self._env.command_manager.get_command(self.cfg.command_name)
+        if command.ndim != 2 or command.shape[1] < 3:
+            raise RuntimeError(
+                f"Command '{self.cfg.command_name}' must provide at least [lin_x, lin_y, ang_z], "
+                f"but got shape {tuple(command.shape)}."
+            )
+
+        cmd_lin_x = command[:, 0]
+        cmd_lin_y = command[:, 1]
+        cmd_ang_z = command[:, 2]
+        cmd_lin_speed = torch.sqrt(cmd_lin_x**2 + cmd_lin_y**2)
+        cmd_heading = torch.atan2(cmd_lin_y, cmd_lin_x)
+        cmd_heading = torch.where(
+            cmd_lin_speed > self.cfg.command_lin_speed_deadband,
+            cmd_heading,
+            torch.zeros_like(cmd_heading),
+        )
+
+        h_min, h_max = self._step_height_range
+        l_min, l_max = self._step_length_range
+        f_min, f_max = self._frequency_range
+
+        base_step_length = torch.clamp(
+            cmd_lin_speed * self.cfg.command_speed_to_step_length,
+            min=l_min,
+            max=l_max,
+        )
+        base_frequency = torch.clamp(
+            self.step_frequency + cmd_lin_speed * self.cfg.command_speed_to_frequency,
+            min=f_min,
+            max=f_max,
+        )
+        base_turn_rate = torch.clamp(
+            cmd_ang_z * self.cfg.command_ang_vel_to_turn_rate,
+            min=-1.0,
+            max=1.0,
+        )
+
+        self._rl_step_height = torch.clamp(self.step_height + self._rl_step_height_residual, h_min, h_max)
+        self._rl_step_length = torch.clamp(base_step_length + self._rl_step_length_residual, l_min, l_max)
+        self._rl_frequency = torch.clamp(base_frequency + self._rl_frequency_residual, f_min, f_max)
+        self._rl_turn_rate = torch.clamp(base_turn_rate + self._rl_turn_rate_residual, -1.0, 1.0)
+
+        # Compute per-environment omega from command-driven + residual frequency.
         rl_omegas = (2.0 * torch.pi) * self._rl_frequency
         
         # Update leg phases for each environment
@@ -379,9 +412,6 @@ class CPGPositionAction(ActionTerm):
         # Reset all joint actions to 0.0
         self._processed_actions.zero_()
         
-        # Determine if each environment should be moving, shape: (num_envs,)
-        is_moving = (self._rl_frequency > 1e-6) & (self._rl_step_length > 1e-6) & (self._rl_step_height > 1e-6)
-        
         # --- Vectorized computation for all legs at once ---
         # Shapes:
         #   self._leg_phases: (num_envs, num_legs)
@@ -389,17 +419,11 @@ class CPGPositionAction(ActionTerm):
         #   self._rl_step_height: (num_envs,)
         #   self._rl_turn_rate: (num_envs,)
         
-        # Compute turn scale for all legs: left legs get (1 + turn_rate), right legs get (1 - turn_rate)
-        # self._leg_side_signs: (num_legs,) with 1.0 for left, -1.0 for right
-        # turn_scale: (num_envs, num_legs)
-        turn_scale = 1.0 + self._rl_turn_rate.unsqueeze(1) * self._leg_side_signs.unsqueeze(0)
-        turn_scale = torch.clamp(turn_scale, 0.0, 2.0)
-        
-        # Effective step length per leg per env: (num_envs, num_legs)
-        effective_step_length = self._rl_step_length.unsqueeze(1) * turn_scale
-        
-        # Combined direction: global_direction * per_leg_multiplier, shape: (num_legs,)
-        combined_direction = self.step_direction * self._leg_direction_multipliers
+        # Turning is implemented by adding opposite signed stride to left/right legs.
+        turn_stride = self._rl_turn_rate.unsqueeze(1) * self.cfg.yaw_step_length_max * self._leg_side_signs.unsqueeze(0)
+        effective_step_length = self._rl_step_length.unsqueeze(1) + turn_stride
+        combined_direction = (self.step_direction * self._leg_direction_multipliers).unsqueeze(0)
+        effective_step_length = effective_step_length * combined_direction
         
         # Compute trajectory for all legs at once
         # phase: (num_envs, num_legs)
@@ -408,22 +432,24 @@ class CPGPositionAction(ActionTerm):
         # Step height expanded: (num_envs, 1) -> broadcast to (num_envs, num_legs)
         step_height_expanded = self._rl_step_height.unsqueeze(1)
         
-        # direction expanded: (num_legs,) -> (1, num_legs) for broadcasting
-        direction_expanded = combined_direction.unsqueeze(0)
-        
         # Compute d_walk and z_loc for all envs and legs
         # d_walk: displacement along walking direction
         # z_loc: vertical displacement
-        d_walk = direction_expanded * (-(effective_step_length / 2.0) * torch.cos(phi))
+        d_walk = -(effective_step_length / 2.0) * torch.cos(phi)
         
         # Swing phase mask: phi <= pi
         swing_mask = phi <= torch.pi
         z_loc = torch.where(swing_mask, step_height_expanded * torch.sin(phi), torch.zeros_like(phi))
         
-        # Transform to leg local coordinate frame
-        # angle_rad: (num_legs,) -> (1, num_legs)
-        angle_cos = torch.cos(self._leg_angle_rads).unsqueeze(0)
-        angle_sin = torch.sin(self._leg_angle_rads).unsqueeze(0)
+        # Determine if each environment should be moving.
+        has_stride = torch.any(torch.abs(effective_step_length) > self.cfg.command_lin_speed_deadband, dim=1)
+        is_moving = (self._rl_frequency > 1e-6) & (self._rl_step_height > 1e-6) & has_stride
+
+        # Transform to leg local coordinate frame.
+        # Command heading rotates the gait direction for omnidirectional motion.
+        walking_angle = self._leg_angle_rads.unsqueeze(0) + cmd_heading.unsqueeze(1)
+        angle_cos = torch.cos(walking_angle)
+        angle_sin = torch.sin(walking_angle)
         
         dx = d_walk * angle_cos
         dy = d_walk * angle_sin
@@ -536,6 +562,10 @@ class CPGPositionAction(ActionTerm):
         self._rl_step_length[env_ids] = self.step_length
         self._rl_frequency[env_ids] = self.step_frequency
         self._rl_turn_rate[env_ids] = 0.0
+        self._rl_step_height_residual[env_ids] = 0.0
+        self._rl_step_length_residual[env_ids] = 0.0
+        self._rl_frequency_residual[env_ids] = 0.0
+        self._rl_turn_rate_residual[env_ids] = 0.0
         
         if self._leg_count > 0:
             self._leg_phases[env_ids] = self._initial_leg_phases
@@ -545,14 +575,10 @@ class CPGPositionAction(ActionTerm):
 class CPGPositionActionCfg(ActionTermCfg):
     """
     Configuration for the CPG position action term with RL interface.
-    
-    RL Action Format: [step_height, step_length, frequency, turn_rate] (all in [-1, 1])
-    - step_height: [-1, 1] -> maps to [step_height_min, step_height_max]
-    - step_length: [-1, 1] -> maps to [step_length_min, step_length_max]  
-    - frequency: [-1, 1] -> maps to [step_frequency_min, step_frequency_max]
-    - turn_rate: [-1, 1] -> differential turning (positive = turn right, negative = turn left)
-    
-    The default values (step_height, step_length, step_frequency) are used during reset.
+
+    CPG baseline is driven by command ``command_name`` and RL only outputs residuals:
+    RL Action Format: [d_step_height, d_step_length, d_frequency, d_turn_rate] in [-1, 1].
+    Zero action means no residual and therefore pure command-driven CPG.
     """
 
     class_type: type[ActionTerm] = CPGPositionAction
@@ -567,16 +593,29 @@ class CPGPositionActionCfg(ActionTermCfg):
     step_length: float = 0.05      # Default step length (m)
     step_frequency: float = 1.0    # Default frequency (Hz)
     step_direction: float = 1.0    # 1.0 = Forward, -1.0 = Backward (fixed, not RL controlled)
-    turn_rate: float = 0.0         # Default turn rate (not used directly, RL controls this)
+    turn_rate: float = 0.0         # Default turn rate (kept for compatibility)
     
-    # RL Action Scaling Ranges
-    # These define the min/max values that RL can command
+    # CPG parameter bounds
     step_height_min: float = 0.0    # Minimum step height (m) - 0 means no lift
     step_height_max: float = 0.08   # Maximum step height (m) - 80mm
     step_length_min: float = 0.0    # Minimum step length (m) - 0 means no forward motion
     step_length_max: float = 0.12   # Maximum step length (m) - 120mm
     step_frequency_min: float = 0.0 # Minimum frequency (Hz) - 0 means stationary
     step_frequency_max: float = 3.0 # Maximum frequency (Hz) - 3 steps per second
+
+    # Command -> CPG mapping
+    command_name: str = "base_velocity"
+    command_speed_to_step_length: float = 0.12
+    command_speed_to_frequency: float = 0.0
+    command_ang_vel_to_turn_rate: float = 1.0
+    command_lin_speed_deadband: float = 1.0e-3
+    yaw_step_length_max: float = 0.08
+
+    # RL residual scales
+    step_height_residual_scale: float = 0.02
+    step_length_residual_scale: float = 0.03
+    step_frequency_residual_scale: float = 0.5
+    turn_rate_residual_scale: float = 0.25
     
     # Geometric Parameters
     center_offset: float = 0.12   # 120mm -> 0.12m (radial distance from coxa to foot)
@@ -612,4 +651,3 @@ class CPGPositionActionCfg(ActionTermCfg):
         "ML": {"coxa": "coxa_ML", "femur": "femur_ML", "tibia": "tibia_ML", "body_angle": -90.0, "phase_offset_deg": 180.0, "side": "left"},
         "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 135.0, "phase_offset_deg": 180.0, "side": "right"},
     }
-
