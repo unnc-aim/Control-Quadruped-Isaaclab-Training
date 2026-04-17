@@ -35,7 +35,7 @@ from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
 
 # Height-related defaults for easier tuning.
 DESIRED_BASE_HEIGHT_M = 0.52
-CPG_GROUND_HEIGHT_M = -0.09
+CPG_GROUND_HEIGHT_M = -0.50
 
 ##
 # Scene definition
@@ -109,16 +109,16 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 20.0),
-        rel_standing_envs=0.02,
+        resampling_time_range=(20.0, 30.0),
+        rel_standing_envs=0.0,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.0, 1.0),
-            lin_vel_y=(0.0, 0.0),
-            ang_vel_z=(0.0, 0.0),
+            lin_vel_x=(-1.0, 1.0),
+            lin_vel_y=(-0.5, 0.5),
+            ang_vel_z=(-1.0, 1.0),
             heading=(-math.pi, math.pi),
         ),
     )
@@ -135,6 +135,8 @@ class ActionsCfg:
         step_length=0.06,
         step_frequency=1.2,
         step_direction=1.0,
+        gait_type="trot",
+        swing_vel_limits=(0.1, -0.2),
         step_height_min=0.0,
         step_height_max=0.08,
         step_length_min=0.0,
@@ -157,7 +159,7 @@ class ActionsCfg:
                 "coxa": "HAA_FRONT_LEFT",
                 "femur": "HFE_FRONT_LEFT",
                 "tibia": "KFE_FRONT_LEFT",
-                "body_angle": -45.0,
+                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
                 "side": "left",
             },
@@ -165,7 +167,7 @@ class ActionsCfg:
                 "coxa": "HAA_FRONT_RIGHT",
                 "femur": "HFE_FRONT_RIGHT",
                 "tibia": "KFE_FRONT_RIGHT",
-                "body_angle": 45.0,
+                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
                 "side": "right",
             },
@@ -173,7 +175,7 @@ class ActionsCfg:
                 "coxa": "HAA_REAR_LEFT",
                 "femur": "HFE_REAR_LEFT",
                 "tibia": "KFE_REAR_LEFT",
-                "body_angle": -135.0,
+                "body_angle": 180.0,
                 "phase_offset_deg": 180.0,
                 "side": "left",
             },
@@ -181,7 +183,7 @@ class ActionsCfg:
                 "coxa": "HAA_REAR_RIGHT",
                 "femur": "HFE_REAR_RIGHT",
                 "tibia": "KFE_REAR_RIGHT",
-                "body_angle": 135.0,
+                "body_angle": 180.0,
                 "phase_offset_deg": 0.0,
                 "side": "right",
             },
