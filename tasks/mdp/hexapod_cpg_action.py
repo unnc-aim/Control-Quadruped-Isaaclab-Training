@@ -602,6 +602,9 @@ class CPGPositionAction(ActionTerm):
                 step_height_expanded=step_height_expanded,
                 frequency=self._rl_frequency,
             )
+            if self.cfg.stance_depth > 0.0:
+                # Keep slight downward bias in stance to maintain ground contact.
+                z_loc = z_loc - self.cfg.stance_depth
         
         # Determine if each environment should be moving.
         has_stride = torch.any(torch.abs(effective_step_length) > self.cfg.command_lin_speed_deadband, dim=1)
@@ -641,10 +644,21 @@ class CPGPositionAction(ActionTerm):
         d_theta2 = torch.where(is_moving_expanded, d_theta2, torch.zeros_like(d_theta2))
         d_theta3 = torch.where(is_moving_expanded, d_theta3, torch.zeros_like(d_theta3))
         
-        # Scatter results to processed_actions using advanced indexing
-        # This avoids the Python for loop entirely
-        self._processed_actions.scatter_(1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta1)
-        self._processed_actions.scatter_(1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta2)
+        # Scatter results to processed_actions using advanced indexing.
+        # Optional debug fallback: swap HAA and HFE outputs to validate joint mapping in simulator.
+        if self.cfg.swap_haa_hfe_targets:
+            coxa_targets = d_theta2
+            femur_targets = d_theta1
+        else:
+            coxa_targets = d_theta1
+            femur_targets = d_theta2
+
+        self._processed_actions.scatter_(
+            1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), coxa_targets
+        )
+        self._processed_actions.scatter_(
+            1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), femur_targets
+        )
         self._processed_actions.scatter_(1, self._leg_tibia_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta3)
 
         # Set position targets
@@ -786,6 +800,7 @@ class CPGPositionActionCfg(ActionTermCfg):
     debug_print_enabled: bool = False
     debug_print_interval: int = 120
     debug_env_index: int = 0
+    swap_haa_hfe_targets: bool = False
     
     # CPG IK configuration
     cpg_config: CPGConfig = CPGConfig()
@@ -793,6 +808,7 @@ class CPGPositionActionCfg(ActionTermCfg):
     # Trajectory geometry parameters
     center_offset: float = 0.12   # default foot X position in HAA frame
     ground_height: float = -0.07  # default foot Z position in HAA frame
+    stance_depth: float = 0.0     # additional downward offset in stance/swing baseline
     
     # Leg Configuration: Name -> {Joint Names, Body Angle, Phase Offset, Side, hip_offset}
     # body_angle rotates the stride direction in leg-local XY.

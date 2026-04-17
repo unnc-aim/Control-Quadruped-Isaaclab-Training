@@ -44,6 +44,11 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class MastiffFlatDirectPPORunnerCfg(MastiffFlatPPORunnerCfg):
+    experiment_name = "mastiff-flat-direct-v0"
+
+
+@configclass
 class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 5000

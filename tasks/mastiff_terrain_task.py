@@ -154,6 +154,7 @@ class ActionsCfg:
         turn_rate_residual_scale=0.1,
         center_offset=0.12,
         ground_height=CPG_GROUND_HEIGHT_M,
+        stance_depth=0.02,
         legs_config={
             "FL": {
                 "coxa": "HAA_FRONT_LEFT",
@@ -161,6 +162,7 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_LEFT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
+                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "FR": {
@@ -169,22 +171,25 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_RIGHT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
+                "direction_multiplier": -1.0,
                 "side": "right",
             },
             "RL": {
                 "coxa": "HAA_REAR_LEFT",
                 "femur": "HFE_REAR_LEFT",
                 "tibia": "KFE_REAR_LEFT",
-                "body_angle": 180.0,
+                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
+                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "RR": {
                 "coxa": "HAA_REAR_RIGHT",
                 "femur": "HFE_REAR_RIGHT",
                 "tibia": "KFE_REAR_RIGHT",
-                "body_angle": 180.0,
+                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
+                "direction_multiplier": -1.0,
                 "side": "right",
             },
         },
