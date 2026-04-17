@@ -192,6 +192,43 @@ $$
 
 策略输出的动作即 **关节目标位置的增量** $\Delta q_{des}$（缩放系数 0.5 rad）。
 
+
+### 4.1 CPG设置
+
+开始之前，在采用CPG action space的情况下，需要基于机器人结构对参数进行调整
+
+在 `tasks/mdp/hexapod_cpg_action.py`，基于机器人的结构设置以下参数
+
+```python
+l_coxa # 髋关节到胯关节的水平距离 
+l_femur # 胯到膝关节的距离
+l_tibia # 膝关节到足端的距离
+
+CPG_GROUND_HEIGHT_M # 站姿胯关节到足端的垂直距离
+
+femur_xy = (femur_y, femur_x) #站姿（0位）膝关节相对胯的偏角
+tibia_xy = (tibia_y, tibia_x) #站姿（0位）足端相对胯的偏角
+```
+![具体参数](documents/IMG_1369.jpg)
+
+以及腿部角度偏置（步态方向相对该腿径向方向的旋转角）
+```python
+# 对四足机器人，腿位于机器人两侧
+# - 左侧腿（FL、RL）：-90°
+# - 右侧腿（FR、RR）：+90°
+
+# 对六足虫形机器人，则为 FL -45, MR 90, RL -135, FR 45, ML -90, RR 135
+    legs_config: dict = {
+        # Group A: FL, MR, RL (phase = 0°)
+        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        "MR": {"coxa": "coxa_MR", "femur": "femur_MR", "tibia": "tibia_MR", "body_angle": 90.0, "phase_offset_deg": 0.0, "side": "right"},
+        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        # Group B: FR, ML, RR (phase = 180°)
+        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
+        "ML": {"coxa": "coxa_ML", "femur": "femur_ML", "tibia": "tibia_ML", "body_angle": -90.0, "phase_offset_deg": 180.0, "side": "left"},
+        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
+    }
+```
 ---
 
 ## 5. 快速上手

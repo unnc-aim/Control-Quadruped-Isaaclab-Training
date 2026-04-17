@@ -34,7 +34,7 @@ from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
 
 # Height-related defaults for easier tuning.
 DESIRED_BASE_HEIGHT_M = 0.52
-CPG_GROUND_HEIGHT_M = -0.05
+CPG_GROUND_HEIGHT_M = -0.52
 
 # Scene definition
 ##

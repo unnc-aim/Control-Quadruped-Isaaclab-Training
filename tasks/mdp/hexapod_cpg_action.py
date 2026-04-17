@@ -20,15 +20,15 @@ class CPGConfig:
     """Kinematic and zero-pose parameters used by CPG IK."""
 
     # Link lengths (meters)
-    l_coxa: float = 0.052
-    l_femur: float = 0.06603
-    l_tibia: float = 0.12848
+    l_coxa: float = 0.01205 #0.01205 or 0.00815
+    l_femur: float = 0.260
+    l_tibia: float = 0.300
 
     # Zero-pose geometry vectors in femur-tibia plane (same unit and scale)
     # Rest femur angle: atan2(femur_xy[0], femur_xy[1])
-    femur_xy: tuple[float, float] = (64.4, 14.6)
+    femur_xy: tuple[float, float] = (-220.1, 138.5) #  x 138.483  y 220.051mm
     # Rest tibia relative angle: atan2(tibia_xy[0], tibia_xy[1]) - femur_rest_angle
-    tibia_xy: tuple[float, float] = (-125.3, 28.4)
+    tibia_xy: tuple[float, float] = (-348.49, 87.58) # x 87.58 y 348.487
 
 
 class CPGPositionAction(ActionTerm):
@@ -660,11 +660,11 @@ class CPGPositionActionCfg(ActionTermCfg):
     #
     legs_config: dict = {
         # Group A: FL, MR, RL (phase = 0°)
-        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": -45.0, "phase_offset_deg": 0.0, "side": "left"},
+        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
         "MR": {"coxa": "coxa_MR", "femur": "femur_MR", "tibia": "tibia_MR", "body_angle": 90.0, "phase_offset_deg": 0.0, "side": "right"},
-        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": -135.0, "phase_offset_deg": 0.0, "side": "left"},
+        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
         # Group B: FR, ML, RR (phase = 180°)
-        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 45.0, "phase_offset_deg": 180.0, "side": "right"},
+        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
         "ML": {"coxa": "coxa_ML", "femur": "femur_ML", "tibia": "tibia_ML", "body_angle": -90.0, "phase_offset_deg": 180.0, "side": "left"},
-        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 135.0, "phase_offset_deg": 180.0, "side": "right"},
+        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
     }
