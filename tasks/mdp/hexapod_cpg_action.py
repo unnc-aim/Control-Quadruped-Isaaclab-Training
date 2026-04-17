@@ -14,6 +14,23 @@ if TYPE_CHECKING:
 from isaaclab.assets.articulation import Articulation
 from isaaclab.managers.action_manager import ActionTermCfg
 
+
+@configclass
+class CPGConfig:
+    """Kinematic and zero-pose parameters used by CPG IK."""
+
+    # Link lengths (meters)
+    l_coxa: float = 0.052
+    l_femur: float = 0.06603
+    l_tibia: float = 0.12848
+
+    # Zero-pose geometry vectors in femur-tibia plane (same unit and scale)
+    # Rest femur angle: atan2(femur_xy[0], femur_xy[1])
+    femur_xy: tuple[float, float] = (64.4, 14.6)
+    # Rest tibia relative angle: atan2(tibia_xy[0], tibia_xy[1]) - femur_rest_angle
+    tibia_xy: tuple[float, float] = (-125.3, 28.4)
+
+
 class CPGPositionAction(ActionTerm):
     """Dummy joint action term that makes joints follow a specific hexapod leg trajectory.
     
@@ -73,18 +90,15 @@ class CPGPositionAction(ActionTerm):
         # apply_actions() is called every physics step, so we use physics_dt for phase update
         self._dt = env.physics_dt
 
-        # --- Robot Geometric Parameters (in meters) ---
-        # Converted from mm: L_COXA=52mm, L_FEMUR=66.03mm, L_TIBIA=128.48mm
-        self.L_COXA = 0.052
-        self.L_FEMUR = 0.06603
-        self.L_TIBIA = 0.12848
-        
-        # Initial pose absolute angles
-        # Femur: Up 77.23 deg, Tibia: Relative to Femur Down 154.46 deg
-        # Note: These ratios are dimensionless (from mm values 64.4/14.6 and -125.3/28.4)
-        self.FEMUR_REST_ANGLE_GLOBAL = math.atan2(64.4, 14.6)
-        # Tibia Rest Angle (Relative to Femur in geometric sense)
-        self.TIBIA_REST_ANGLE_RELATIVE = math.atan2(-125.3, 28.4) - self.FEMUR_REST_ANGLE_GLOBAL
+        # --- CPG IK geometry and zero-pose parameters ---
+        cpg_cfg = cfg.cpg_config
+        self.L_COXA = cpg_cfg.l_coxa
+        self.L_FEMUR = cpg_cfg.l_femur
+        self.L_TIBIA = cpg_cfg.l_tibia
+        self.FEMUR_REST_ANGLE_GLOBAL = math.atan2(cpg_cfg.femur_xy[0], cpg_cfg.femur_xy[1])
+        self.TIBIA_REST_ANGLE_RELATIVE = (
+            math.atan2(cpg_cfg.tibia_xy[0], cpg_cfg.tibia_xy[1]) - self.FEMUR_REST_ANGLE_GLOBAL
+        )
 
         # --- Trajectory Parameters ---
         self.step_length = cfg.step_length
@@ -617,7 +631,10 @@ class CPGPositionActionCfg(ActionTermCfg):
     step_frequency_residual_scale: float = 0.5
     turn_rate_residual_scale: float = 0.25
     
-    # Geometric Parameters
+    # CPG IK configuration
+    cpg_config: CPGConfig = CPGConfig()
+
+    # Trajectory geometry parameters
     center_offset: float = 0.12   # 120mm -> 0.12m (radial distance from coxa to foot)
     ground_height: float = -0.07  # -70mm -> -0.07m (foot height relative to coxa)
     
