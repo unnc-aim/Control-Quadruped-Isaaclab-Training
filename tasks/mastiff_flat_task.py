@@ -33,8 +33,8 @@ sys.path.insert(0, str(_PROJECT_PATH))
 from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
 
 # Height-related defaults for easier tuning.
-DESIRED_BASE_HEIGHT_M = 0.52
-CPG_GROUND_HEIGHT_M = -0.52
+DESIRED_BASE_HEIGHT_M = 0.35
+CPG_GROUND_HEIGHT_M = -0.35
 
 # Scene definition
 ##
@@ -109,8 +109,8 @@ class ActionsCfg:
     cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        step_height=0.035,
-        step_length=0.06,
+        step_height=0.1,
+        step_length=0.2,
         step_frequency=1.2,
         step_direction=1.0,
         gait_type="trot",
@@ -135,7 +135,7 @@ class ActionsCfg:
         debug_print_interval=120,
         debug_env_index=0,
         swap_haa_hfe_targets=False,
-        center_offset=0.12,
+        center_offset=-0.0269,
         ground_height=CPG_GROUND_HEIGHT_M,
         stance_depth=0.01,
         legs_config={
@@ -154,7 +154,7 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_RIGHT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": -1.0,
+                "direction_multiplier": 1.0,
                 "side": "right",
             },
             "RL": {
@@ -172,7 +172,7 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_RIGHT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": -1.0,
+                "direction_multiplier": 1.0,
                 "side": "right",
             },
         },
