@@ -24,7 +24,7 @@ class CPGConfig:
     l_femur: float = 0.260
     l_tibia: float = 0.300
 
-    # Zero-pose absolute angles (deg), aligned with ik_test.py
+    # Zero-pose absolute angles (deg), 
     femur_rest_angle_global_deg: float = -47.695
     tibia_rest_angle_relative_deg: float = -84.61
 
@@ -58,24 +58,9 @@ class CPGPositionAction(ActionTerm):
         if self._num_joints == self._asset.num_joints:
             self._joint_ids = slice(None)
         
-        # Create tensors for raw and processed actions.
-        # RL action is residual over command-driven CPG parameters:
-        # [d_step_height, d_step_length, d_frequency, d_turn_rate]
-        self._rl_action_dim = 4
-        self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
+        # Create tensor for processed joint targets.
         self._processed_actions = torch.zeros(self.num_envs, self._num_joints, device=self.device)
         self._env = env
-        
-        # Final CPG parameters applied each step (command baseline + RL residual).
-        self._rl_step_height = torch.full((self.num_envs,), cfg.step_height, device=self.device)
-        self._rl_step_length = torch.full((self.num_envs,), cfg.step_length, device=self.device)
-        self._rl_frequency = torch.full((self.num_envs,), cfg.step_frequency, device=self.device)
-        self._rl_turn_rate = torch.zeros(self.num_envs, device=self.device)
-        # RL residuals are set in process_actions().
-        self._rl_step_height_residual = torch.zeros(self.num_envs, device=self.device)
-        self._rl_step_length_residual = torch.zeros(self.num_envs, device=self.device)
-        self._rl_frequency_residual = torch.zeros(self.num_envs, device=self.device)
-        self._rl_turn_rate_residual = torch.zeros(self.num_envs, device=self.device)
         
         # Parameter scaling ranges (for RL action mapping)
         # RL action [-1, 1] -> [0, 1] -> [min, max] for each parameter
@@ -223,16 +208,32 @@ class CPGPositionAction(ActionTerm):
             self._leg_phases = torch.zeros(self.num_envs, 0, device=self.device, dtype=torch.float32)
             self._initial_leg_phases = torch.zeros(0, device=self.device, dtype=torch.float32)
 
+        # RL action is per-leg residual over command-driven CPG parameters:
+        # [d_step_height, d_step_length, d_frequency, d_turn_rate] for each leg.
+        self._rl_action_dim = self._leg_count * 4
+        self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
+        leg_param_shape = (self.num_envs, self._leg_count)
+        # Final CPG parameters applied each step (command baseline + RL residual).
+        self._rl_step_height = torch.full(leg_param_shape, cfg.step_height, device=self.device)
+        self._rl_step_length = torch.full(leg_param_shape, cfg.step_length, device=self.device)
+        self._rl_frequency = torch.full(leg_param_shape, cfg.step_frequency, device=self.device)
+        self._rl_turn_rate = torch.zeros(leg_param_shape, device=self.device)
+        # RL residuals are set in process_actions().
+        self._rl_step_height_residual = torch.zeros(leg_param_shape, device=self.device)
+        self._rl_step_length_residual = torch.zeros(leg_param_shape, device=self.device)
+        self._rl_frequency_residual = torch.zeros(leg_param_shape, device=self.device)
+        self._rl_turn_rate_residual = torch.zeros(leg_param_shape, device=self.device)
+
         print(f"[CPGPositionAction] Initialized with {self._leg_count} legs configured")
         print(f"[CPGPositionAction] Default Freq={self.step_frequency}, Height={self.step_height}, Length={self.step_length}")
         print(
             f"[CPGPositionAction] RL Action Dim={self._rl_action_dim} "
-            "[d_height, d_length, d_freq, d_turn] (residual over command)"
+            f"({self._leg_count} legs x 4): [d_height, d_length, d_freq, d_turn] per leg"
         )
 
     @property
     def action_dim(self) -> int:
-        """RL action dimension: [d_step_height, d_step_length, d_frequency, d_turn_rate]."""
+        """RL action dimension: num_legs * [d_step_height, d_step_length, d_frequency, d_turn_rate]."""
         return self._rl_action_dim
 
     @property
@@ -245,18 +246,30 @@ class CPGPositionAction(ActionTerm):
 
     def process_actions(self, actions: torch.Tensor):
         """
-        Process RL actions as residuals on top of command-driven CPG parameters.
+        Process RL actions as per-leg residuals on top of command-driven CPG parameters.
 
-        Action format: [d_step_height, d_step_length, d_frequency, d_turn_rate] in [-1, 1].
+        Action format: flatten(num_legs, [d_step_height, d_step_length, d_frequency, d_turn_rate]) in [-1, 1].
         Zero action means "no residual", i.e. pure command->CPG mapping.
         """
+        if actions.ndim != 2 or actions.shape[0] != self.num_envs:
+            raise RuntimeError(
+                f"Expected actions with shape ({self.num_envs}, {self._rl_action_dim}), got {tuple(actions.shape)}."
+            )
+        if actions.shape[1] != self._rl_action_dim:
+            raise RuntimeError(
+                f"Expected action dim {self._rl_action_dim} (num_legs*4), got {actions.shape[1]}."
+            )
+
         self._raw_actions[:] = actions
+        if self._leg_count == 0:
+            return
 
         action_clamped = torch.clamp(actions, -1.0, 1.0)
-        self._rl_step_height_residual = action_clamped[:, 0] * self.cfg.step_height_residual_scale
-        self._rl_step_length_residual = action_clamped[:, 1] * self.cfg.step_length_residual_scale
-        self._rl_frequency_residual = action_clamped[:, 2] * self.cfg.step_frequency_residual_scale
-        self._rl_turn_rate_residual = action_clamped[:, 3] * self.cfg.turn_rate_residual_scale
+        action_by_leg = action_clamped.reshape(self.num_envs, self._leg_count, 4)
+        self._rl_step_height_residual = action_by_leg[:, :, 0] * self.cfg.step_height_residual_scale
+        self._rl_step_length_residual = action_by_leg[:, :, 1] * self.cfg.step_length_residual_scale
+        self._rl_frequency_residual = action_by_leg[:, :, 2] * self.cfg.step_frequency_residual_scale
+        self._rl_turn_rate_residual = action_by_leg[:, :, 3] * self.cfg.turn_rate_residual_scale
 
     def _get_joint_limits_for_env(self, env_idx: int) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Get joint lower/upper limits for a specific environment, if available."""
@@ -319,10 +332,10 @@ class CPGPositionAction(ActionTerm):
             f"[CPGDebug] step={step_idx} env={env_idx} "
             f"cmd(vx,vy,wz)=({cmd[0].item():+.3f},{cmd[1].item():+.3f},{cmd[2].item():+.3f}) "
             f"base_wz={yaw_rate:+.3f} "
-            f"cpg(h,l,f,turn)=({self._rl_step_height[env_idx].item():.4f},"
-            f"{self._rl_step_length[env_idx].item():.4f},"
-            f"{self._rl_frequency[env_idx].item():.4f},"
-            f"{self._rl_turn_rate[env_idx].item():+.4f}) "
+            f"cpg_mean(h,l,f,turn)=({self._rl_step_height[env_idx].mean().item():.4f},"
+            f"{self._rl_step_length[env_idx].mean().item():.4f},"
+            f"{self._rl_frequency[env_idx].mean().item():.4f},"
+            f"{self._rl_turn_rate[env_idx].mean().item():+.4f}) "
             f"ik_valid={ik_valid_count}/{self._leg_count} active={active_count}/{self._leg_count} "
             f"alt_branch={alt_branch_count}/{self._leg_count} clamped={clamped_count}/{self._leg_count}"
         )
@@ -379,6 +392,10 @@ class CPGPositionAction(ActionTerm):
                 f"phase={phase_deg:6.1f}deg({gait_phase}) "
                 f"contact_phase={contact_phase_deg:6.1f}deg({contact_phase}) "
                 f"span={step_span[env_idx, leg_idx].item():.4f} "
+                f"cpg=({self._rl_step_height[env_idx, leg_idx].item():.4f},"
+                f"{self._rl_step_length[env_idx, leg_idx].item():.4f},"
+                f"{self._rl_frequency[env_idx, leg_idx].item():.4f},"
+                f"{self._rl_turn_rate[env_idx, leg_idx].item():+.4f}) "
                 f"step_vec=({step_x_local[env_idx, leg_idx].item():+.4f},"
                 f"{step_y_local[env_idx, leg_idx].item():+.4f}) "
                 f"target=({target_x[env_idx, leg_idx].item():+.4f},"
@@ -576,18 +593,20 @@ class CPGPositionAction(ActionTerm):
             max=1.0,
         )
 
+        base_step_length = base_step_length.unsqueeze(1)
+        base_frequency = base_frequency.unsqueeze(1)
+        base_turn_rate = base_turn_rate.unsqueeze(1)
+
         self._rl_step_height = torch.clamp(self.step_height + self._rl_step_height_residual, h_min, h_max)
         self._rl_step_length = torch.clamp(base_step_length + self._rl_step_length_residual, l_min, l_max)
         self._rl_frequency = torch.clamp(base_frequency + self._rl_frequency_residual, f_min, f_max)
         self._rl_turn_rate = torch.clamp(base_turn_rate + self._rl_turn_rate_residual, -1.0, 1.0)
 
-        # Compute per-environment omega from command-driven + residual frequency.
+        # Compute per-leg omega from command-driven + residual frequency.
         rl_omegas = (2.0 * torch.pi) * self._rl_frequency
         
-        # Update leg phases for each environment
-        # Expand rl_omegas to (num_envs, num_legs) and update all phases at once
-        omega_expanded = rl_omegas.unsqueeze(1)  # (num_envs, 1)
-        self._leg_phases = (self._leg_phases + omega_expanded * self._dt) % (2.0 * torch.pi)
+        # Update all leg phases at once.
+        self._leg_phases = (self._leg_phases + rl_omegas * self._dt) % (2.0 * torch.pi)
         
         # Reset all joint actions to 0.0
         self._processed_actions.zero_()
@@ -595,17 +614,17 @@ class CPGPositionAction(ActionTerm):
         # --- Vectorized computation for all legs at once ---
         # Shapes:
         #   self._leg_phases: (num_envs, num_legs)
-        #   self._rl_step_length: (num_envs,)
-        #   self._rl_step_height: (num_envs,)
-        #   self._rl_turn_rate: (num_envs,)
+        #   self._rl_step_length: (num_envs, num_legs)
+        #   self._rl_step_height: (num_envs, num_legs)
+        #   self._rl_turn_rate: (num_envs, num_legs)
         
         # Build per-leg step vector from command velocity:
         # - translation part follows (lin_x, lin_y)
         # - turning part is differential stride on body-x for left/right legs
-        turn_stride = self._rl_turn_rate.unsqueeze(1) * self.cfg.yaw_step_length_max * self._leg_side_signs.unsqueeze(0)
+        turn_stride = self._rl_turn_rate * self.cfg.yaw_step_length_max * self._leg_side_signs.unsqueeze(0)
         motion_direction = 0.0 if self.step_direction == 0.0 else (1.0 if self.step_direction > 0.0 else -1.0)
-        lin_step_x_body = motion_direction * self._rl_step_length.unsqueeze(1) * cmd_dir_x.unsqueeze(1)
-        lin_step_y_body = motion_direction * self._rl_step_length.unsqueeze(1) * cmd_dir_y.unsqueeze(1)
+        lin_step_x_body = motion_direction * self._rl_step_length * cmd_dir_x.unsqueeze(1)
+        lin_step_y_body = motion_direction * self._rl_step_length * cmd_dir_y.unsqueeze(1)
         step_x_body = lin_step_x_body + turn_stride
         step_y_body = lin_step_y_body
 
@@ -624,9 +643,6 @@ class CPGPositionAction(ActionTerm):
         # phase: (num_envs, num_legs)
         phi = self._leg_phases % (2.0 * torch.pi)
         
-        # Step height expanded: (num_envs, 1) -> broadcast to (num_envs, num_legs)
-        step_height_expanded = self._rl_step_height.unsqueeze(1)
-        
         # 与 ik_test 对齐：零相位在支撑相中点，且先支撑后摆动
         phase_zero_shift = torch.pi / 2.0
         phi_shifted = (phase_zero_shift - phi) % (2.0 * torch.pi)
@@ -635,11 +651,10 @@ class CPGPositionAction(ActionTerm):
         d_walk = direction_mul * (step_span / 2.0) * torch.cos(phi_shifted)
         stance_mask = phi_shifted < torch.pi
         z_loc = torch.zeros_like(phi_shifted)
-        z_loc = torch.where(stance_mask, z_loc, -step_height_expanded * torch.sin(phi_shifted - torch.pi))
+        z_loc = torch.where(stance_mask, z_loc, -self._rl_step_height * torch.sin(phi_shifted - torch.pi))
         
-        # Determine if each environment should be moving.
-        has_stride = torch.any(has_step, dim=1)
-        is_moving = (self._rl_frequency > 1e-6) & (self._rl_step_height > 1e-6) & has_stride
+        # Determine if each leg should be moving.
+        is_moving = (self._rl_frequency > 1e-6) & (self._rl_step_height > 1e-6) & has_step
 
         # Trajectory direction in leg local frame follows command velocity vector.
         dx = d_walk * gait_dir_x
@@ -701,8 +716,7 @@ class CPGPositionAction(ActionTerm):
         d_theta3_alt = theta3_relative_alt - self.TIBIA_REST_ANGLE_RELATIVE
         
         # For non-moving or IK-invalid targets, set joint angles to 0
-        is_moving_expanded = is_moving.unsqueeze(1)  # (num_envs, 1)
-        active_mask = is_moving_expanded & valid_ik
+        active_mask = is_moving & valid_ik
         d_theta1 = torch.where(active_mask, d_theta1_main, torch.zeros_like(d_theta1_main))
         d_theta2 = torch.where(active_mask, d_theta2_main, torch.zeros_like(d_theta2_main))
         d_theta3 = torch.where(active_mask, d_theta3_main, torch.zeros_like(d_theta3_main))
@@ -850,7 +864,7 @@ class CPGPositionActionCfg(ActionTermCfg):
     Configuration for the CPG position action term with RL interface.
 
     CPG baseline is driven by command ``command_name`` and RL only outputs residuals:
-    RL Action Format: [d_step_height, d_step_length, d_frequency, d_turn_rate] in [-1, 1].
+    RL Action Format: flatten(num_legs, [d_step_height, d_step_length, d_frequency, d_turn_rate]) in [-1, 1].
     Zero action means no residual and therefore pure command-driven CPG.
     """
 
