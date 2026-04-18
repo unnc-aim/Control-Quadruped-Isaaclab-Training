@@ -433,7 +433,9 @@ class CPGPositionAction(ActionTerm):
         """
         # 与 ik_test 对齐：相位零点放在支撑相中点（phi=pi/2）
         phase_zero_shift = math.pi / 2.0
-        phi = (phase + phase_zero_shift) % (2 * math.pi)
+        # Reverse phase sampling order to preserve gait travel direction
+        # after switching swing arc to the upper semi-ellipse.
+        phi = (phase_zero_shift - phase) % (2 * math.pi)
 
         # Initialize trajectory displacement in the walking direction
         d_walk = torch.zeros_like(phi)  # displacement along walking direction
@@ -444,7 +446,7 @@ class CPGPositionAction(ActionTerm):
         stance_mask = phi < math.pi
         swing_mask = ~stance_mask
         z_loc[stance_mask] = 0.0
-        z_loc[swing_mask] = step_height * torch.sin(phi[swing_mask] - math.pi)
+        z_loc[swing_mask] = -step_height * torch.sin(phi[swing_mask] - math.pi)
         
         # --- Transform to Leg Local Coordinate Frame ---
         # The walking displacement d_walk is in a direction rotated by angle_rad from the leg's X-axis
@@ -627,13 +629,13 @@ class CPGPositionAction(ActionTerm):
         
         # 与 ik_test 对齐：零相位在支撑相中点，且先支撑后摆动
         phase_zero_shift = torch.pi / 2.0
-        phi_shifted = (phi + phase_zero_shift) % (2.0 * torch.pi)
+        phi_shifted = (phase_zero_shift - phi) % (2.0 * torch.pi)
 
         direction_mul = self._leg_direction_multipliers.unsqueeze(0)
         d_walk = direction_mul * (step_span / 2.0) * torch.cos(phi_shifted)
         stance_mask = phi_shifted < torch.pi
         z_loc = torch.zeros_like(phi_shifted)
-        z_loc = torch.where(stance_mask, z_loc, step_height_expanded * torch.sin(phi_shifted - torch.pi))
+        z_loc = torch.where(stance_mask, z_loc, -step_height_expanded * torch.sin(phi_shifted - torch.pi))
         
         # Determine if each environment should be moving.
         has_stride = torch.any(has_step, dim=1)
@@ -794,7 +796,7 @@ class CPGPositionAction(ActionTerm):
         """
         # 与 ik_test 对齐：相位零点放在支撑相中点（phi=pi/2）
         phase_zero_shift = math.pi / 2.0
-        phi = (phase + phase_zero_shift) % (2 * math.pi)
+        phi = (phase_zero_shift - phase) % (2 * math.pi)
 
         # Initialize trajectory displacement
         d_walk = torch.zeros_like(phi)
@@ -805,7 +807,7 @@ class CPGPositionAction(ActionTerm):
         stance_mask = phi < math.pi
         swing_mask = ~stance_mask
         z_loc[stance_mask] = 0.0
-        z_loc[swing_mask] = step_height[swing_mask] * torch.sin(phi[swing_mask] - math.pi)
+        z_loc[swing_mask] = -step_height[swing_mask] * torch.sin(phi[swing_mask] - math.pi)
         
         # Transform to Leg Local Coordinate Frame
         dx = d_walk * math.cos(angle_rad)
