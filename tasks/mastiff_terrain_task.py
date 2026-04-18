@@ -171,7 +171,7 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_RIGHT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": 1.0,
+                "direction_multiplier": -1.0,
                 "side": "right",
             },
             "RL": {
@@ -189,7 +189,7 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_RIGHT",
                 "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": 1.0,
+                "direction_multiplier": -1.0,
                 "side": "right",
             },
         },

@@ -102,6 +102,18 @@ class CPGPositionAction(ActionTerm):
         self._joint_pos_max = torch.full(
             (self.num_envs, self._asset.num_joints), float("-inf"), device=self.device, dtype=torch.float32
         )
+        self._lock_base_in_air = bool(cfg.lock_base_in_air)
+        self._locked_root_pose = None
+        self._locked_root_vel = None
+        if self._lock_base_in_air:
+            default_root_state = self._asset.data.default_root_state
+            self._locked_root_pose = default_root_state[:, :7].clone()
+            env_origins = getattr(self._env.scene, "env_origins", None)
+            if isinstance(env_origins, torch.Tensor) and env_origins.shape == self._locked_root_pose[:, :3].shape:
+                self._locked_root_pose[:, :3] += env_origins
+            if cfg.lock_base_height is not None:
+                self._locked_root_pose[:, 2] = cfg.lock_base_height
+            self._locked_root_vel = torch.zeros_like(default_root_state[:, 7:])
 
         # --- CPG IK geometry and zero-pose parameters ---
         cpg_cfg = cfg.cpg_config
@@ -276,6 +288,7 @@ class CPGPositionAction(ActionTerm):
         self,
         command: torch.Tensor,
         phi_shifted: torch.Tensor,
+        phi_contact: torch.Tensor,
         step_span: torch.Tensor,
         step_x_local: torch.Tensor,
         step_y_local: torch.Tensor,
@@ -347,6 +360,8 @@ class CPGPositionAction(ActionTerm):
             tibia_idx = int(self._leg_tibia_indices[leg_idx].item())
             phase_deg = math.degrees(phi_shifted[env_idx, leg_idx].item())
             gait_phase = "STANCE" if phase_deg < 180.0 else "SWING"
+            contact_phase_deg = math.degrees(phi_contact[env_idx, leg_idx].item())
+            contact_phase = "STANCE" if contact_phase_deg < 180.0 else "SWING"
             q_set_coxa = (
                 target_buf_env[coxa_idx].item() if target_buf_env is not None else target_joint_pos_env[coxa_idx].item()
             )
@@ -362,6 +377,7 @@ class CPGPositionAction(ActionTerm):
             print(
                 f"[CPGDebug][{leg['name']}] "
                 f"phase={phase_deg:6.1f}deg({gait_phase}) "
+                f"contact_phase={contact_phase_deg:6.1f}deg({contact_phase}) "
                 f"span={step_span[env_idx, leg_idx].item():.4f} "
                 f"step_vec=({step_x_local[env_idx, leg_idx].item():+.4f},"
                 f"{step_y_local[env_idx, leg_idx].item():+.4f}) "
@@ -506,6 +522,10 @@ class CPGPositionAction(ActionTerm):
         """
         # Increment step counter
         self._step_counter += 1
+
+        if self._lock_base_in_air and self._locked_root_pose is not None and self._locked_root_vel is not None:
+            self._asset.write_root_pose_to_sim(self._locked_root_pose)
+            self._asset.write_root_velocity_to_sim(self._locked_root_vel)
         
         if self._leg_count == 0:
             return
@@ -592,9 +612,6 @@ class CPGPositionAction(ActionTerm):
         leg_angle_sin = torch.sin(self._leg_angle_rads).unsqueeze(0)
         step_x_local = step_x_body * leg_angle_cos - step_y_body * leg_angle_sin
         step_y_local = step_x_body * leg_angle_sin + step_y_body * leg_angle_cos
-        direction_mul = self._leg_direction_multipliers.unsqueeze(0)
-        step_x_local = step_x_local * direction_mul
-        step_y_local = step_y_local * direction_mul
         step_span = torch.sqrt(step_x_local**2 + step_y_local**2)
         safe_step_span = torch.clamp_min(step_span, 1.0e-9)
         has_step = step_span > self.cfg.command_lin_speed_deadband
@@ -612,15 +629,8 @@ class CPGPositionAction(ActionTerm):
         phase_zero_shift = torch.pi / 2.0
         phi_shifted = (phi + phase_zero_shift) % (2.0 * torch.pi)
 
-        # For mirrored legs (direction_multiplier < 0), compensate walk-phase by pi so
-        # stance/swing grouping stays unchanged while fore-aft progression remains symmetric.
-        walk_phase_correction = torch.where(
-            direction_mul < 0.0,
-            torch.full_like(phi_shifted, torch.pi),
-            torch.zeros_like(phi_shifted),
-        )
-        phi_walk = (phi_shifted + walk_phase_correction) % (2.0 * torch.pi)
-        d_walk = (step_span / 2.0) * torch.cos(phi_walk)
+        direction_mul = self._leg_direction_multipliers.unsqueeze(0)
+        d_walk = direction_mul * (step_span / 2.0) * torch.cos(phi_shifted)
         stance_mask = phi_shifted < torch.pi
         z_loc = torch.zeros_like(phi_shifted)
         z_loc = torch.where(stance_mask, z_loc, step_height_expanded * torch.sin(phi_shifted - torch.pi))
@@ -754,6 +764,7 @@ class CPGPositionAction(ActionTerm):
         self._maybe_log_debug(
             command=command,
             phi_shifted=phi_shifted,
+            phi_contact=phi_shifted,
             step_span=step_span,
             step_x_local=step_x_local,
             step_y_local=step_y_local,
@@ -851,7 +862,7 @@ class CPGPositionActionCfg(ActionTermCfg):
     # Default CPG Parameters (used as initial values and for reset)
     step_height: float = 0.03      # Default step height (m)
     step_length: float = 0.05      # Default step length (m)
-    step_frequency: float = 1.0    # Default frequency (Hz)
+    step_frequency: float = 2    # Default frequency (Hz)
     step_direction: float = 1.0    # 1.0 = Forward, -1.0 = Backward (fixed, not RL controlled)
     turn_rate: float = 0.0         # Default turn rate (kept for compatibility)
     gait_type: str = "trot"        # Compatibility field (selected in task cfg)
@@ -884,6 +895,8 @@ class CPGPositionActionCfg(ActionTermCfg):
     debug_print_enabled: bool = False
     debug_print_interval: int = 100
     debug_env_index: int = 0
+    lock_base_in_air: bool = False
+    lock_base_height: float | None = None
     
     # CPG IK configuration
     cpg_config: CPGConfig = CPGConfig()
