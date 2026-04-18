@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -18,31 +17,25 @@ from isaaclab.managers.action_manager import ActionTermCfg
 
 @configclass
 class CPGConfig:
-    """Kinematic parameters for quadruped HAA-HFE-KFE leg IK."""
+    """Kinematic and zero-pose parameters used by CPG IK."""
 
-    # Leg geometry (meters)
-    # l_coxa is interpreted as the lateral HAA->HFE chain offset magnitude.
-    l_coxa: float = 0.1205
+    # Link lengths (meters)
+    l_coxa: float = 0.01205 #0.01205 or 0.00815
     l_femur: float = 0.260
     l_tibia: float = 0.300
 
-    # Joint rest angles (radians) in robot control convention.
-    hip_rest_angle: float = 0.0
-    femur_rest_angle = None
-    tibia_rest_angle = None
-    # Legacy fallback: if rest-angle fields are None, derive from these vectors.
-    # femur angle: atan2(femur_xy[0], femur_xy[1])
-    femur_xy: tuple[float, float] | None = (-220.1, 138.5)
-    # tibia relative angle: atan2(tibia_xy[0], tibia_xy[1]) - femur_rest_angle
-    tibia_xy: tuple[float, float] | None = (-348.49, 87.58)
+    # Zero-pose geometry vectors in femur-tibia plane (same unit and scale)
+    # Rest femur angle: atan2(femur_xy[0], femur_xy[1])
+    femur_xy: tuple[float, float] = (-220.1, 138.5) #  x 138.483  y 220.051mm
+    # Rest tibia relative angle: atan2(tibia_xy[0], tibia_xy[1]) - femur_rest_angle
+    tibia_xy: tuple[float, float] = (-348.49, 87.58) # x 87.58 y 348.487
 
 
 class CPGPositionAction(ActionTerm):
-    """Joint action term for command-driven quadruped gait generation.
-
-    The locomotion logic is adapted from wb-mpc-locoman gait scheduling concepts
-    (contact/swing sequencing and swing profile shaping), while keeping IsaacLab's
-    vectorized action-term interface.
+    """Dummy joint action term that makes joints follow a specific hexapod leg trajectory.
+    
+    This action term implements a CPG-like trajectory generator and Inverse Kinematics (IK)
+    for a hexapod leg, based on the logic from ik_test.py.
     """
 
     cfg: CPGPositionActionCfg
@@ -70,9 +63,6 @@ class CPGPositionAction(ActionTerm):
         self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
         self._processed_actions = torch.zeros(self.num_envs, self._num_joints, device=self.device)
         self._env = env
-        self._debug_print_enabled = cfg.debug_print_enabled
-        self._debug_print_interval = max(1, int(cfg.debug_print_interval))
-        self._debug_env_index = max(0, int(cfg.debug_env_index))
         
         # Final CPG parameters applied each step (command baseline + RL residual).
         self._rl_step_height = torch.full((self.num_envs,), cfg.step_height, device=self.device)
@@ -85,22 +75,14 @@ class CPGPositionAction(ActionTerm):
         self._rl_frequency_residual = torch.zeros(self.num_envs, device=self.device)
         self._rl_turn_rate_residual = torch.zeros(self.num_envs, device=self.device)
         
-        # CPG parameter bounds
+        # Parameter scaling ranges (for RL action mapping)
+        # RL action [-1, 1] -> [0, 1] -> [min, max] for each parameter
         self._step_height_range = (cfg.step_height_min, cfg.step_height_max)
         self._step_length_range = (cfg.step_length_min, cfg.step_length_max)
         self._frequency_range = (cfg.step_frequency_min, cfg.step_frequency_max)
         
         # Step counter to track simulation steps
         self._step_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
-        self._gait_type = cfg.gait_type.lower()
-        if self._gait_type not in {"trot", "walk", "stand"}:
-            raise ValueError(f"Unsupported gait_type: {cfg.gait_type}. Expected one of: trot, walk, stand.")
-        if self._gait_type == "trot":
-            self._swing_ratio = 0.5
-        elif self._gait_type == "walk":
-            self._swing_ratio = 0.25
-        else:
-            self._swing_ratio = 0.0
         
         # Get simulation timestep (physics_dt, NOT step_dt)
         # physics_dt = sim.dt = 0.01s (100Hz physics)
@@ -110,22 +92,13 @@ class CPGPositionAction(ActionTerm):
 
         # --- CPG IK geometry and zero-pose parameters ---
         cpg_cfg = cfg.cpg_config
-        self.L_HIP = cpg_cfg.l_coxa
+        self.L_COXA = cpg_cfg.l_coxa
         self.L_FEMUR = cpg_cfg.l_femur
         self.L_TIBIA = cpg_cfg.l_tibia
-        self.HIP_REST_ANGLE = cpg_cfg.hip_rest_angle
-        if cpg_cfg.femur_rest_angle is not None and cpg_cfg.tibia_rest_angle is not None:
-            self.FEMUR_REST_ANGLE_GLOBAL = cpg_cfg.femur_rest_angle
-            self.TIBIA_REST_ANGLE_RELATIVE = cpg_cfg.tibia_rest_angle
-        elif cpg_cfg.femur_xy is not None and cpg_cfg.tibia_xy is not None:
-            self.FEMUR_REST_ANGLE_GLOBAL = math.atan2(cpg_cfg.femur_xy[0], cpg_cfg.femur_xy[1])
-            self.TIBIA_REST_ANGLE_RELATIVE = (
-                math.atan2(cpg_cfg.tibia_xy[0], cpg_cfg.tibia_xy[1]) - self.FEMUR_REST_ANGLE_GLOBAL
-            )
-        else:
-            raise ValueError(
-                "CPGConfig must provide either femur_rest_angle+tibia_rest_angle or femur_xy+tibia_xy."
-            )
+        self.FEMUR_REST_ANGLE_GLOBAL = math.atan2(cpg_cfg.femur_xy[0], cpg_cfg.femur_xy[1])
+        self.TIBIA_REST_ANGLE_RELATIVE = (
+            math.atan2(cpg_cfg.tibia_xy[0], cpg_cfg.tibia_xy[1]) - self.FEMUR_REST_ANGLE_GLOBAL
+        )
 
         # --- Trajectory Parameters ---
         self.step_length = cfg.step_length
@@ -145,13 +118,10 @@ class CPGPositionAction(ActionTerm):
         leg_initial_phases: list[float] = []
         for leg_name, leg_conf in cfg.legs_config.items():
             # Find joint indices
-            # Use anchored patterns to avoid accidental partial regex matches.
-            coxa_pattern = f"^{re.escape(leg_conf['coxa'])}$"
-            femur_pattern = f"^{re.escape(leg_conf['femur'])}$"
-            tibia_pattern = f"^{re.escape(leg_conf['tibia'])}$"
-            c_ids, c_names = self._asset.find_joints([coxa_pattern])
-            f_ids, f_names = self._asset.find_joints([femur_pattern])
-            t_ids, t_names = self._asset.find_joints([tibia_pattern])
+            # We assume the config provides exact joint names or patterns that match 1 joint
+            c_ids, _ = self._asset.find_joints([leg_conf["coxa"]])
+            f_ids, _ = self._asset.find_joints([leg_conf["femur"]])
+            t_ids, _ = self._asset.find_joints([leg_conf["tibia"]])
             
             if len(c_ids) > 0 and len(f_ids) > 0 and len(t_ids) > 0:
                 phase_offset_deg = leg_conf.get("phase_offset_deg", 0.0)
@@ -160,7 +130,6 @@ class CPGPositionAction(ActionTerm):
                 step_height = leg_conf.get("step_height", self.step_height)
                 ground_height = leg_conf.get("ground_height", self.ground_height)
                 center_offset = leg_conf.get("center_offset", self.center_offset)
-                hip_offset = abs(leg_conf.get("hip_offset", self.L_HIP))
                 self.legs.append({
                     "name": leg_name,
                     "coxa_idx": c_ids[0],
@@ -173,7 +142,6 @@ class CPGPositionAction(ActionTerm):
                     "step_height": step_height,
                     "ground_height": ground_height,
                     "center_offset": center_offset,
-                    "hip_offset": hip_offset,
                     "direction_multiplier": leg_conf.get("direction_multiplier", 1.0),
                     "side": leg_conf.get("side", "left"),  # "left" or "right" for differential turning
                 })
@@ -181,13 +149,6 @@ class CPGPositionAction(ActionTerm):
                 leg_initial_phases.append(math.radians(phase_offset_deg))
             else:
                 print(f"[DummyJointPositionAction] Warning: Could not find joints for leg {leg_name}")
-                if self._debug_print_enabled:
-                    print(
-                        f"[CPGDebug] leg={leg_name} joint lookup "
-                        f"coxa({coxa_pattern})={list(c_names)} "
-                        f"femur({femur_pattern})={list(f_names)} "
-                        f"tibia({tibia_pattern})={list(t_names)}"
-                    )
         self._leg_count = len(self.legs)
         if self._leg_count > 0:
             self._leg_omegas = torch.tensor(leg_omegas, device=self.device, dtype=torch.float32)
@@ -206,9 +167,6 @@ class CPGPositionAction(ActionTerm):
             self._leg_ground_heights = torch.tensor(
                 [leg["ground_height"] for leg in self.legs], device=self.device, dtype=torch.float32
             )
-            self._leg_hip_offsets = torch.tensor(
-                [leg["hip_offset"] for leg in self.legs], device=self.device, dtype=torch.float32
-            )
             self._leg_direction_multipliers = torch.tensor(
                 [leg.get("direction_multiplier", 1.0) for leg in self.legs], device=self.device, dtype=torch.float32
             )
@@ -217,7 +175,6 @@ class CPGPositionAction(ActionTerm):
                 [1.0 if leg.get("side", "left") == "left" else -1.0 for leg in self.legs], 
                 device=self.device, dtype=torch.float32
             )
-            self._leg_signed_hip_offsets = self._leg_hip_offsets * self._leg_side_signs
             # Joint indices as tensors for vectorized indexing
             self._leg_coxa_indices = torch.tensor(
                 [leg["coxa_idx"] for leg in self.legs], device=self.device, dtype=torch.long
@@ -239,19 +196,6 @@ class CPGPositionAction(ActionTerm):
             f"[CPGPositionAction] RL Action Dim={self._rl_action_dim} "
             "[d_height, d_length, d_freq, d_turn] (residual over command)"
         )
-        if self._debug_print_enabled and self._leg_count > 0:
-            all_joint_ids, all_joint_names = self._asset.find_joints([".*"])
-            id_to_name = {int(j_id): j_name for j_id, j_name in zip(all_joint_ids, all_joint_names)}
-            for leg in self.legs:
-                c_idx = int(leg["coxa_idx"])
-                f_idx = int(leg["femur_idx"])
-                t_idx = int(leg["tibia_idx"])
-                print(
-                    f"[CPGDebug] leg={leg['name']} indices "
-                    f"coxa={c_idx}:{id_to_name.get(c_idx, '?')} "
-                    f"femur={f_idx}:{id_to_name.get(f_idx, '?')} "
-                    f"tibia={t_idx}:{id_to_name.get(t_idx, '?')}"
-                )
 
     @property
     def action_dim(self) -> int:
@@ -280,75 +224,6 @@ class CPGPositionAction(ActionTerm):
         self._rl_step_length_residual = action_clamped[:, 1] * self.cfg.step_length_residual_scale
         self._rl_frequency_residual = action_clamped[:, 2] * self.cfg.step_frequency_residual_scale
         self._rl_turn_rate_residual = action_clamped[:, 3] * self.cfg.turn_rate_residual_scale
-
-    @staticmethod
-    def _cubic_hermite(
-        u: torch.Tensor,
-        p0: torch.Tensor,
-        p1: torch.Tensor,
-        v0: torch.Tensor,
-        v1: torch.Tensor,
-        dt: torch.Tensor,
-    ) -> torch.Tensor:
-        """Cubic Hermite spline segment used by the wb-mpc swing profile."""
-        h00 = 2.0 * u**3 - 3.0 * u**2 + 1.0
-        h10 = u**3 - 2.0 * u**2 + u
-        h01 = -2.0 * u**3 + 3.0 * u**2
-        h11 = u**3 - u**2
-        return h00 * p0 + h10 * dt * v0 + h01 * p1 + h11 * dt * v1
-
-    def _compute_gait_schedule(self, phi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return swing mask and normalized swing phase [0, 1] for each leg."""
-        if self._gait_type == "stand" or self._swing_ratio <= 0.0:
-            swing_mask = torch.zeros_like(phi, dtype=torch.bool)
-            swing_phase = torch.zeros_like(phi)
-            return swing_mask, swing_phase
-
-        leg_phase = (phi / (2.0 * torch.pi)) % 1.0
-        swing_mask = leg_phase < self._swing_ratio
-        swing_phase = torch.where(swing_mask, leg_phase / self._swing_ratio, torch.zeros_like(leg_phase))
-        return swing_mask, swing_phase
-
-    def _compute_swing_height(
-        self,
-        swing_phase: torch.Tensor,
-        swing_mask: torch.Tensor,
-        step_height_expanded: torch.Tensor,
-        frequency: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute swing-foot z profile using wb-mpc style cubic spline segments."""
-        if self._gait_type == "stand" or self._swing_ratio <= 0.0:
-            return torch.zeros_like(swing_phase)
-
-        freq_safe = torch.clamp(frequency, min=1.0e-6).unsqueeze(1)
-        swing_period = self._swing_ratio / freq_safe
-        half_period = 0.5 * swing_period
-        v_liftoff = torch.full_like(swing_phase, self.cfg.swing_vel_limits[0])
-        v_touchdown = torch.full_like(swing_phase, self.cfg.swing_vel_limits[1])
-
-        first_half = swing_phase < 0.5
-        u1 = torch.clamp(2.0 * swing_phase, 0.0, 1.0)
-        z1 = self._cubic_hermite(
-            u=u1,
-            p0=torch.zeros_like(swing_phase),
-            p1=step_height_expanded,
-            v0=v_liftoff,
-            v1=torch.zeros_like(swing_phase),
-            dt=half_period,
-        )
-
-        u2 = torch.clamp(2.0 * (swing_phase - 0.5), 0.0, 1.0)
-        z2 = self._cubic_hermite(
-            u=u2,
-            p0=step_height_expanded,
-            p1=torch.zeros_like(swing_phase),
-            v0=torch.zeros_like(swing_phase),
-            v1=v_touchdown,
-            dt=half_period,
-        )
-
-        z_swing = torch.where(first_half, z1, z2)
-        return torch.where(swing_mask, z_swing, torch.zeros_like(z_swing))
 
     def _compute_trajectory(
         self,
@@ -434,59 +309,54 @@ class CPGPositionAction(ActionTerm):
         
         return X, Y, Z
 
-    def _solve_ik(
-        self,
-        target_x: torch.Tensor,
-        target_y: torch.Tensor,
-        target_z: torch.Tensor,
-        hip_offset_signed: torch.Tensor | float | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _solve_ik(self, target_x: torch.Tensor, target_y: torch.Tensor, target_z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Solve batched IK for a quadruped leg with HAA(x)-HFE(y)-KFE(y) axes.
-
-        Coordinates are in each leg-local frame:
-        - X: forward/backward in sagittal direction
-        - Y: lateral (left positive)
-        - Z: up positive
+        Solve Inverse Kinematics for a batch of targets in the leg's local coordinate frame.
+        
+        The leg local frame has:
+        - Origin at coxa joint
+        - X-axis pointing radially outward
+        - Z-axis pointing up
+        
+        Args:
+            target_x: Target X position (radial distance from coxa)
+            target_y: Target Y position (lateral offset)
+            target_z: Target Z position (height relative to coxa)
+            
+        Returns:
+            d_theta1: Coxa joint angle (rotation around Z)
+            d_theta2: Femur joint angle delta (relative to rest pose)
+            d_theta3: Tibia joint angle delta (relative to rest pose)
         """
-        if hip_offset_signed is None:
-            y_offset = torch.full_like(target_x, self.L_HIP)
-        elif isinstance(hip_offset_signed, torch.Tensor):
-            y_offset = hip_offset_signed
-        else:
-            y_offset = torch.full_like(target_x, float(hip_offset_signed))
-
-        # 1) HAA angle around x-axis.
-        # Choose branch that keeps theta1 close to zero near nominal standing posture.
-        yz_radius = torch.sqrt(target_y**2 + target_z**2).clamp_min(1.0e-6)
-        cos_arg = torch.clamp(y_offset / yz_radius, -1.0, 1.0)
-        theta1_absolute = -torch.acos(cos_arg) - torch.atan2(target_z, target_y)
-
-        # Rotate target into HFE-KFE sagittal plane.
-        sin_t1 = torch.sin(theta1_absolute)
-        cos_t1 = torch.cos(theta1_absolute)
-        z_plane = target_y * sin_t1 + target_z * cos_t1
-        x_plane = target_x
-        L_virtual = torch.sqrt(x_plane**2 + z_plane**2).clamp_min(1.0e-6)
-
-        # 2) HFE/KFE two-link IK in x-z plane.
+        # --- 1. Solve Coxa (Theta 1) ---
+        theta1 = torch.atan2(target_y, target_x)
+        
+        # --- 2. Transform to Femur-Tibia Plane ---
+        r_projection = torch.sqrt(target_x**2 + target_y**2)
+        w = r_projection - self.L_COXA
+        h = target_z
+        
+        L_virtual = torch.sqrt(w**2 + h**2)
+        
+        # --- 4. Law of Cosines for J2, J3 ---
         cos_beta = (self.L_FEMUR**2 + self.L_TIBIA**2 - L_virtual**2) / (2 * self.L_FEMUR * self.L_TIBIA)
         cos_beta = torch.clamp(cos_beta, -1.0, 1.0)
         beta = torch.acos(cos_beta)
-
+        
         cos_alpha = (self.L_FEMUR**2 + L_virtual**2 - self.L_TIBIA**2) / (2 * self.L_FEMUR * L_virtual)
         cos_alpha = torch.clamp(cos_alpha, -1.0, 1.0)
         alpha = torch.acos(cos_alpha)
-
-        gamma = torch.atan2(z_plane, x_plane)
+        
+        gamma = torch.atan2(h, w)
+        
         theta2_absolute = gamma + alpha
         theta3_relative = beta - math.pi
-
-        # 3) Convert to control deltas around configured rest angles.
-        d_theta1 = theta1_absolute - self.HIP_REST_ANGLE
+        
+        # --- 5. Convert to Control Deltas ---
+        d_theta1 = theta1
         d_theta2 = theta2_absolute - self.FEMUR_REST_ANGLE_GLOBAL
         d_theta3 = theta3_relative - self.TIBIA_REST_ANGLE_RELATIVE
-
+        
         return d_theta1, d_theta2, d_theta3
 
     def apply_actions(self):
@@ -529,10 +399,6 @@ class CPGPositionAction(ActionTerm):
             min=l_min,
             max=l_max,
         )
-        if self.cfg.command_min_step_length > 0.0:
-            moving_cmd = cmd_lin_speed > self.cfg.command_lin_speed_deadband
-            min_stride = torch.full_like(base_step_length, self.cfg.command_min_step_length)
-            base_step_length = torch.where(moving_cmd, torch.maximum(base_step_length, min_stride), base_step_length)
         base_frequency = torch.clamp(
             self.step_frequency + cmd_lin_speed * self.cfg.command_speed_to_frequency,
             min=f_min,
@@ -576,35 +442,18 @@ class CPGPositionAction(ActionTerm):
         # Compute trajectory for all legs at once
         # phase: (num_envs, num_legs)
         phi = self._leg_phases % (2.0 * torch.pi)
-        swing_mask, swing_phase = self._compute_gait_schedule(phi)
-
+        
         # Step height expanded: (num_envs, 1) -> broadcast to (num_envs, num_legs)
         step_height_expanded = self._rl_step_height.unsqueeze(1)
-
-        # wb-mpc style phase-based horizontal progression:
-        # swing: rear -> front, stance: front -> rear
-        if self._gait_type == "stand" or self._swing_ratio <= 0.0:
-            d_walk = torch.zeros_like(phi)
-            z_loc = torch.zeros_like(phi)
-        else:
-            leg_phase = (phi / (2.0 * torch.pi)) % 1.0
-            swing_phase_linear = torch.clamp(leg_phase / self._swing_ratio, 0.0, 1.0)
-            stance_den = max(1.0 - self._swing_ratio, 1.0e-6)
-            stance_phase_linear = torch.clamp((leg_phase - self._swing_ratio) / stance_den, 0.0, 1.0)
-
-            d_swing = -0.5 * effective_step_length + effective_step_length * swing_phase_linear
-            d_stance = 0.5 * effective_step_length - effective_step_length * stance_phase_linear
-            d_walk = torch.where(swing_mask, d_swing, d_stance)
-
-            z_loc = self._compute_swing_height(
-                swing_phase=swing_phase,
-                swing_mask=swing_mask,
-                step_height_expanded=step_height_expanded,
-                frequency=self._rl_frequency,
-            )
-            if self.cfg.stance_depth > 0.0:
-                # Keep slight downward bias in stance to maintain ground contact.
-                z_loc = z_loc - self.cfg.stance_depth
+        
+        # Compute d_walk and z_loc for all envs and legs
+        # d_walk: displacement along walking direction
+        # z_loc: vertical displacement
+        d_walk = -(effective_step_length / 2.0) * torch.cos(phi)
+        
+        # Swing phase mask: phi <= pi
+        swing_mask = phi <= torch.pi
+        z_loc = torch.where(swing_mask, step_height_expanded * torch.sin(phi), torch.zeros_like(phi))
         
         # Determine if each environment should be moving.
         has_stride = torch.any(torch.abs(effective_step_length) > self.cfg.command_lin_speed_deadband, dim=1)
@@ -624,19 +473,38 @@ class CPGPositionAction(ActionTerm):
         ground_height_expanded = self._leg_ground_heights.unsqueeze(0)
         
         # Final target positions: (num_envs, num_legs)
-        # Add signed hip lateral offset so HAA neutral pose aligns with leg workspace.
-        hip_offset_expanded = self._leg_signed_hip_offsets.unsqueeze(0)
         target_x = center_offset_expanded + dx
-        target_y = hip_offset_expanded + dy
+        target_y = dy
         target_z = ground_height_expanded + z_loc
-
+        
         # --- Vectorized IK for all legs ---
-        d_theta1, d_theta2, d_theta3 = self._solve_ik(
-            target_x=target_x,
-            target_y=target_y,
-            target_z=target_z,
-            hip_offset_signed=hip_offset_expanded,
-        )
+        # Solve coxa (theta1)
+        theta1 = torch.atan2(target_y, target_x)
+        
+        # Transform to femur-tibia plane
+        r_projection = torch.sqrt(target_x**2 + target_y**2)
+        w = r_projection - self.L_COXA
+        h = target_z
+        L_virtual = torch.sqrt(w**2 + h**2)
+        
+        # Law of cosines
+        cos_beta = (self.L_FEMUR**2 + self.L_TIBIA**2 - L_virtual**2) / (2 * self.L_FEMUR * self.L_TIBIA)
+        cos_beta = torch.clamp(cos_beta, -1.0, 1.0)
+        beta = torch.acos(cos_beta)
+        
+        cos_alpha = (self.L_FEMUR**2 + L_virtual**2 - self.L_TIBIA**2) / (2 * self.L_FEMUR * L_virtual)
+        cos_alpha = torch.clamp(cos_alpha, -1.0, 1.0)
+        alpha = torch.acos(cos_alpha)
+        
+        gamma = torch.atan2(h, w)
+        
+        theta2_absolute = gamma + alpha
+        theta3_relative = beta - torch.pi
+        
+        # Convert to control deltas
+        d_theta1 = theta1
+        d_theta2 = theta2_absolute - self.FEMUR_REST_ANGLE_GLOBAL
+        d_theta3 = theta3_relative - self.TIBIA_REST_ANGLE_RELATIVE
         
         # For non-moving environments, set joint angles to 0
         is_moving_expanded = is_moving.unsqueeze(1)  # (num_envs, 1)
@@ -644,44 +512,14 @@ class CPGPositionAction(ActionTerm):
         d_theta2 = torch.where(is_moving_expanded, d_theta2, torch.zeros_like(d_theta2))
         d_theta3 = torch.where(is_moving_expanded, d_theta3, torch.zeros_like(d_theta3))
         
-        # Scatter results to processed_actions using advanced indexing.
-        # Optional debug fallback: swap HAA and HFE outputs to validate joint mapping in simulator.
-        if self.cfg.swap_haa_hfe_targets:
-            coxa_targets = d_theta2
-            femur_targets = d_theta1
-        else:
-            coxa_targets = d_theta1
-            femur_targets = d_theta2
-
-        self._processed_actions.scatter_(
-            1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), coxa_targets
-        )
-        self._processed_actions.scatter_(
-            1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), femur_targets
-        )
+        # Scatter results to processed_actions using advanced indexing
+        # This avoids the Python for loop entirely
+        self._processed_actions.scatter_(1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta1)
+        self._processed_actions.scatter_(1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta2)
         self._processed_actions.scatter_(1, self._leg_tibia_indices.unsqueeze(0).expand(self.num_envs, -1), d_theta3)
 
         # Set position targets
         self._asset.set_joint_position_target(self._processed_actions, joint_ids=self._joint_ids)
-
-        if self._debug_print_enabled and int(self._step_counter[0].item()) % self._debug_print_interval == 0:
-            env_idx = min(self._debug_env_index, self.num_envs - 1)
-            hfe_env = d_theta2[env_idx]
-            haa_env = d_theta1[env_idx]
-            kfe_env = d_theta3[env_idx]
-            print(
-                "[CPGDebug] "
-                f"env={env_idx} "
-                f"cmd=({cmd_lin_x[env_idx].item():+.3f},{cmd_lin_y[env_idx].item():+.3f},{cmd_ang_z[env_idx].item():+.3f}) "
-                f"heading={math.degrees(cmd_heading[env_idx].item()):+.1f}deg "
-                f"step_len={self._rl_step_length[env_idx].item():.4f} "
-                f"step_h={self._rl_step_height[env_idx].item():.4f} "
-                f"freq={self._rl_frequency[env_idx].item():.3f} "
-                f"turn={self._rl_turn_rate[env_idx].item():+.3f} "
-                f"haa_rng={float((haa_env.max() - haa_env.min()).item()):.4f} "
-                f"hfe_rng={float((hfe_env.max() - hfe_env.min()).item()):.4f} "
-                f"kfe_rng={float((kfe_env.max() - kfe_env.min()).item()):.4f}"
-            )
     
     def _compute_trajectory_batched(
         self,
@@ -752,9 +590,9 @@ class CPGPositionActionCfg(ActionTermCfg):
     """
     Configuration for the CPG position action term with RL interface.
 
-    Quadruped chassis control baseline is driven by command ``command_name`` and RL only outputs residuals:
+    CPG baseline is driven by command ``command_name`` and RL only outputs residuals:
     RL Action Format: [d_step_height, d_step_length, d_frequency, d_turn_rate] in [-1, 1].
-    Zero action means no residual and therefore pure command-driven gait controller.
+    Zero action means no residual and therefore pure command-driven CPG.
     """
 
     class_type: type[ActionTerm] = CPGPositionAction
@@ -770,8 +608,6 @@ class CPGPositionActionCfg(ActionTermCfg):
     step_frequency: float = 1.0    # Default frequency (Hz)
     step_direction: float = 1.0    # 1.0 = Forward, -1.0 = Backward (fixed, not RL controlled)
     turn_rate: float = 0.0         # Default turn rate (kept for compatibility)
-    gait_type: str = "trot"        # "trot", "walk", or "stand"
-    swing_vel_limits: tuple[float, float] = (0.1, -0.2)  # liftoff / touchdown z-velocity targets (m/s)
     
     # CPG parameter bounds
     step_height_min: float = 0.0    # Minimum step height (m) - 0 means no lift
@@ -786,7 +622,6 @@ class CPGPositionActionCfg(ActionTermCfg):
     command_speed_to_step_length: float = 0.12
     command_speed_to_frequency: float = 0.0
     command_ang_vel_to_turn_rate: float = 1.0
-    command_min_step_length: float = 0.0
     command_lin_speed_deadband: float = 1.0e-3
     yaw_step_length_max: float = 0.08
 
@@ -795,28 +630,41 @@ class CPGPositionActionCfg(ActionTermCfg):
     step_length_residual_scale: float = 0.03
     step_frequency_residual_scale: float = 0.5
     turn_rate_residual_scale: float = 0.25
-
-    # Optional runtime diagnostics
-    debug_print_enabled: bool = False
-    debug_print_interval: int = 120
-    debug_env_index: int = 0
-    swap_haa_hfe_targets: bool = False
     
     # CPG IK configuration
     cpg_config: CPGConfig = CPGConfig()
 
     # Trajectory geometry parameters
-    center_offset: float = 0.12   # default foot X position in HAA frame
-    ground_height: float = -0.07  # default foot Z position in HAA frame
-    stance_depth: float = 0.0     # additional downward offset in stance/swing baseline
+    center_offset: float = 0.12   # 120mm -> 0.12m (radial distance from coxa to foot)
+    ground_height: float = -0.07  # -70mm -> -0.07m (foot height relative to coxa)
     
-    # Leg Configuration: Name -> {Joint Names, Body Angle, Phase Offset, Side, hip_offset}
-    # body_angle rotates the stride direction in leg-local XY.
-    # phase_offset_deg uses a trot default: FL+RR vs FR+RL.
-    # hip_offset is optional; if omitted, cpg_config.l_coxa is used.
+    # Leg Configuration: Name -> {Joint Names, Body Angle, Phase Offset, Side}
+    # 
+    # body_angle: Rotation angle of the walking trajectory relative to the leg's radial direction.
+    #   - 0° means walking direction is along the leg's radial axis (outward/inward)
+    #   - 90° means walking direction is tangential (sideways)
+    #   - For forward walking, this should be set so the trajectory aligns with body X-axis
+    #
+    # phase_offset_deg: Phase offset for tripod gait coordination
+    #   - Tripod Gait: Two groups of 3 legs alternate
+    #   - Group A (phase=0°): FL, MR, RL - swing together
+    #   - Group B (phase=180°): FR, ML, RR - swing together
+    #
+    # side: Which side of the body the leg is on ("left" or "right")
+    #   - Used for differential turning control
+    #
+    # For a hexapod with legs arranged around the body:
+    #   - FL/FR at ±45° from body X-axis, so body_angle = ∓45° to align with body X
+    #   - ML/MR at ±90° from body X-axis, so body_angle = ∓90° to align with body X  
+    #   - RL/RR at ±135° from body X-axis, so body_angle = ∓135° to align with body X
+    #
     legs_config: dict = {
-        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": 0.0, "phase_offset_deg": 0.0, "side": "left"},
-        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 0.0, "phase_offset_deg": 180.0, "side": "right"},
-        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": 180.0, "phase_offset_deg": 180.0, "side": "left"},
-        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 180.0, "phase_offset_deg": 0.0, "side": "right"},
+        # Group A: FL, MR, RL (phase = 0°)
+        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        "MR": {"coxa": "coxa_MR", "femur": "femur_MR", "tibia": "tibia_MR", "body_angle": 90.0, "phase_offset_deg": 0.0, "side": "right"},
+        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        # Group B: FR, ML, RR (phase = 180°)
+        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
+        "ML": {"coxa": "coxa_ML", "femur": "femur_ML", "tibia": "tibia_ML", "body_angle": -90.0, "phase_offset_deg": 180.0, "side": "left"},
+        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
     }
