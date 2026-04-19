@@ -377,7 +377,8 @@ class RewardsCfg:
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-7)
 
     # 动作变化率：相邻帧动作差异过大则惩罚，抑制抖动
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
+    # Per-leg CPG residual action is now 16D for quadruped; keep per-dimension penalty strength unchanged.
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0005)
 
     # 大腿非期望接触（软约束替代硬终止）
     undesired_thigh_contact = RewTerm(

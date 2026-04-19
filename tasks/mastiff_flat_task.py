@@ -93,12 +93,12 @@ class CommandsCfg:
         rel_heading_envs=0.0,
         heading_command=False,
         heading_control_stiffness=0.5,
-        debug_vis=True,
+        debug_vis=False,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(1.0, 1.0),
-            lin_vel_y=(0, 0),
-            ang_vel_z=(0, 0),
-            heading=(0,0),
+            lin_vel_x=(-1.0, 1.0),
+            lin_vel_y=(-1.0, 1.0),
+            ang_vel_z=(-0.5, 0.5),
+            heading=(-math.pi/2,math.pi/2),
         ),
     )
 
@@ -134,7 +134,7 @@ class ActionsCfg:
         debug_print_enabled=True,
         debug_print_interval=120,
         debug_env_index=0,
-        lock_base_in_air=True,
+        lock_base_in_air=False,
         lock_base_height=0.45,
         swap_haa_hfe_targets=False,
         center_offset=-0.0269,
@@ -347,7 +347,8 @@ class RewardsCfg:
     
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-6)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
+    # Per-leg CPG residual action is now 16D for quadruped; keep per-dimension penalty strength unchanged.
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0005)
     # -- optional penalties
     # dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
 

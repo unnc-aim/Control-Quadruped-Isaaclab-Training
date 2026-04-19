@@ -20,7 +20,8 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         hidden_dims=[512, 256, 128],
         activation="elu",
         obs_normalization=True,
-        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+        # Keep hidden dims unchanged; action head size follows env action_dim automatically.
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.5),
     )
     critic = RslRlMLPModelCfg(
         hidden_dims=[128, 64, 32],
@@ -60,7 +61,8 @@ class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         hidden_dims=[512, 256, 128],
         activation="elu",
         obs_normalization=True,
-        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.5),
+        # Keep hidden dims unchanged; action head size follows env action_dim automatically.
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.25),
     )
     critic = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
