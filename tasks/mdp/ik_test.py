@@ -13,8 +13,8 @@ L_TIBIA = 300
 
 # 初始姿态绝对角 (按项目 CPGConfig 的四足狗几何定义)
 # femur_xy = (femur_y, femur_x), tibia_xy = (tibia_y, tibia_x)
-FEMUR_REST_ANGLE_GLOBAL = np.deg2rad(-47.695)
-TIBIA_REST_ANGLE_RELATIVE = np.deg2rad(-84.61)# 84.61
+FEMUR_REST_ANGLE_GLOBAL = np.deg2rad(-40)
+TIBIA_REST_ANGLE_RELATIVE = np.deg2rad(-100)# 84.61
 
 def rot_x(theta):
     """绕 X 轴旋转矩阵"""

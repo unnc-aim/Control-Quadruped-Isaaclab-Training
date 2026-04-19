@@ -25,8 +25,9 @@ class CPGConfig:
     l_tibia: float = 0.300
 
     # Zero-pose absolute angles (deg), 
-    femur_rest_angle_global_deg: float = -47.695
-    tibia_rest_angle_relative_deg: float = -84.61
+    femur_rest_angle_global_deg: float = -40
+    # Keep this aligned with tasks/mdp/ik_test.py.
+    tibia_rest_angle_relative_deg: float = -100
 
     # Optional legacy vector form (femur_xy=(y, x), tibia_xy=(y, x)); when provided, it overrides deg fields.
     femur_xy: tuple[float, float] | None = None
@@ -463,7 +464,8 @@ class CPGPositionAction(ActionTerm):
         stance_mask = phi < math.pi
         swing_mask = ~stance_mask
         z_loc[stance_mask] = 0.0
-        z_loc[swing_mask] = -step_height * torch.sin(phi[swing_mask] - math.pi)
+        # Align with ik_test: swing phase lifts the foot toward larger Z.
+        z_loc[swing_mask] = step_height * torch.sin(phi[swing_mask] - math.pi)
         
         # --- Transform to Leg Local Coordinate Frame ---
         # The walking displacement d_walk is in a direction rotated by angle_rad from the leg's X-axis
@@ -651,7 +653,8 @@ class CPGPositionAction(ActionTerm):
         d_walk = direction_mul * (step_span / 2.0) * torch.cos(phi_shifted)
         stance_mask = phi_shifted < torch.pi
         z_loc = torch.zeros_like(phi_shifted)
-        z_loc = torch.where(stance_mask, z_loc, -self._rl_step_height * torch.sin(phi_shifted - torch.pi))
+        # Align with ik_test: swing phase lifts the foot (upper semi-ellipse).
+        z_loc = torch.where(stance_mask, z_loc, self._rl_step_height * torch.sin(phi_shifted - torch.pi))
         
         # Determine if each leg should be moving.
         is_moving = (self._rl_frequency > 1e-6) & (self._rl_step_height > 1e-6) & has_step
@@ -821,7 +824,7 @@ class CPGPositionAction(ActionTerm):
         stance_mask = phi < math.pi
         swing_mask = ~stance_mask
         z_loc[stance_mask] = 0.0
-        z_loc[swing_mask] = -step_height[swing_mask] * torch.sin(phi[swing_mask] - math.pi)
+        z_loc[swing_mask] = step_height[swing_mask] * torch.sin(phi[swing_mask] - math.pi)
         
         # Transform to Leg Local Coordinate Frame
         dx = d_walk * math.cos(angle_rad)

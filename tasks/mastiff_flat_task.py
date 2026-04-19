@@ -75,6 +75,12 @@ class MySceneCfg(InteractiveSceneCfg):
         history_length=3,
         track_air_time=True
     )
+    foot_contact_sensor = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/Mastiff/Foot.*",
+        history_length=1,
+        filter_prim_paths_expr=["/World/GroundPlane"],
+        debug_vis=True,
+    )
        
     
     
@@ -109,16 +115,16 @@ class ActionsCfg:
     cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        step_height=0.1,
-        step_length=0.2,
+        step_height=0.12,
+        step_length=0.18,
         step_frequency=2,
         step_direction=1.0,
         gait_type="trot",
-        swing_vel_limits=(0.1, -0.2),
+        swing_vel_limits=(0.2, -0.3),
         step_height_min=0.0,
-        step_height_max=0.08,
+        step_height_max=0.2,
         step_length_min=0.0,
-        step_length_max=0.12,
+        step_length_max=0.22,
         step_frequency_min=0.0,
         step_frequency_max=3.0,
         command_name="base_velocity",
@@ -131,10 +137,10 @@ class ActionsCfg:
         step_length_residual_scale=0.012,
         step_frequency_residual_scale=0.2,
         turn_rate_residual_scale=0.1,
-        debug_print_enabled=True,
+        debug_print_enabled=False,
         debug_print_interval=120,
         debug_env_index=0,
-        lock_base_in_air=False,
+        lock_base_in_air=True,
         lock_base_height=0.45,
         swap_haa_hfe_targets=False,
         center_offset=-0.0269,
@@ -423,6 +429,8 @@ class MastiffFlatEnvCfg(ManagerBasedRLEnvCfg):
         # sensor update periods
         if self.scene.contact_sensor is not None:
             self.scene.contact_sensor.update_period = self.sim.dt
+        if self.scene.foot_contact_sensor is not None:
+            self.scene.foot_contact_sensor.update_period = self.sim.dt
         if self.scene.height_scanner is not None:
             self.scene.height_scanner.update_period = self.sim.dt * 2
         
