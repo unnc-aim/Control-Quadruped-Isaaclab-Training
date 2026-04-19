@@ -5,7 +5,7 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
 
 
 @configclass
@@ -14,13 +14,19 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 3000
     save_interval = 100
     experiment_name = "mastiff-flat-v0"
-    empirical_normalization = False
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        noise_std_type="log",
-        actor_hidden_dims=[128, 64, 32],
-        critic_hidden_dims=[128, 64, 32],
+    empirical_normalization = True
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
         activation="elu",
+        obs_normalization=True,
+        # Keep hidden dims unchanged; action head size follows env action_dim automatically.
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.5),
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[128, 64, 32],
+        activation="elu",
+        obs_normalization=True,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
@@ -39,20 +45,29 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class MastiffFlatDirectPPORunnerCfg(MastiffFlatPPORunnerCfg):
+    experiment_name = "mastiff-flat-direct-v0"
+
+
+@configclass
 class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 100
     experiment_name = "mastiff-terrain-v0"
     empirical_normalization = True
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
-        noise_std_type="log",
-        actor_obs_normalization=True,
-        critic_obs_normalization=True,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
         activation="elu",
+        obs_normalization=True,
+        # Keep hidden dims unchanged; action head size follows env action_dim automatically.
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.25),
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

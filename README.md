@@ -192,6 +192,43 @@ $$
 
 策略输出的动作即 **关节目标位置的增量** $\Delta q_{des}$（缩放系数 0.5 rad）。
 
+
+### 4.1 CPG设置
+
+开始之前，在采用CPG action space的情况下，需要基于机器人结构对参数进行调整
+
+在 `tasks/mdp/hexapod_cpg_action.py`，基于机器人的结构设置以下参数
+
+```python
+l_coxa # 髋关节到胯关节的水平距离 
+l_femur # 胯到膝关节的距离
+l_tibia # 膝关节到足端的距离
+
+CPG_GROUND_HEIGHT_M # 站姿胯关节到足端的垂直距离
+
+femur_xy = (femur_y, femur_x) #站姿（0位）膝关节相对胯的偏角
+tibia_xy = (tibia_y, tibia_x) #站姿（0位）足端相对胯的偏角
+```
+![具体参数](documents/IMG_1369.jpg)
+
+以及腿部角度偏置（步态方向相对该腿径向方向的旋转角）
+```python
+# 对四足机器人，腿位于机器人两侧
+# - 左侧腿（FL、RL）：-90°
+# - 右侧腿（FR、RR）：+90°
+
+# 对六足虫形机器人，则为 FL -45, MR 90, RL -135, FR 45, ML -90, RR 135
+    legs_config: dict = {
+        # Group A: FL, MR, RL (phase = 0°)
+        "FL": {"coxa": "coxa_FL", "femur": "femur_FL", "tibia": "tibia_FL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        "MR": {"coxa": "coxa_MR", "femur": "femur_MR", "tibia": "tibia_MR", "body_angle": 90.0, "phase_offset_deg": 0.0, "side": "right"},
+        "RL": {"coxa": "coxa_RL", "femur": "femur_RL", "tibia": "tibia_RL", "body_angle": -90.0, "phase_offset_deg": 0.0, "side": "left"},
+        # Group B: FR, ML, RR (phase = 180°)
+        "FR": {"coxa": "coxa_FR", "femur": "femur_FR", "tibia": "tibia_FR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
+        "ML": {"coxa": "coxa_ML", "femur": "femur_ML", "tibia": "tibia_ML", "body_angle": -90.0, "phase_offset_deg": 180.0, "side": "left"},
+        "RR": {"coxa": "coxa_RR", "femur": "femur_RR", "tibia": "tibia_RR", "body_angle": 90.0, "phase_offset_deg": 180.0, "side": "right"},
+    }
+```
 ---
 
 ## 5. 快速上手
@@ -203,34 +240,39 @@ $$
 cd <path-to-project>/Mastiff/scripts/rsl_rl
 ```
 
+加载isaacLab环境
+```
+source whatever_the_env_is_located/bin/activate
+```
+
 ### 5.1 训练
 
 **平地任务（入门推荐）：**
 
 ```bash
 # 无窗口训练，4096 个并行环境
-isaactrain.py --task mastiff-flat-v0 --headless --num_envs 4096
+python3 train.py --task mastiff-flat-v0 --headless --num_envs 4096
 
 # 较少环境，用于调试（可以开窗口观察）
-isaactrain.py --task mastiff-flat-v0 --num_envs 256
+python3 train.py --task mastiff-flat-v0 --num_envs 256
 ```
 
 **地形任务（含课程学习）：**
 
 ```bash
-isaactrain.py --task mastiff-terrain-v0 --headless --num_envs 4096
+python3 train.py --task mastiff-terrain-v0 --headless --num_envs 4096
 ```
 
 **从 Checkpoint 续训：**
 
 ```bash
-isaactrain.py --task mastiff-terrain-v0 --headless --num_envs 4096 --resume
+python3 train.py --task mastiff-terrain-v0 --headless --num_envs 4096 --resume
 ```
 
 **指定最大迭代轮数：**
 
 ```bash
-isaactrain.py --task mastiff-flat-v0 --headless --num_envs 4096 --max_iterations 3000
+python3 train.py --task mastiff-flat-v0 --headless --num_envs 4096 --max_iterations 3000
 ```
 
 **监控训练（TensorBoard）：**
@@ -252,14 +294,14 @@ tensorboard --logdir scripts/logs/rsl_rl/
 
 ```bash
 # 自动寻找最新 checkpoint
-isaacplay.py --task mastiff-terrain-v0 --num_envs 32
+python3 play.py --task mastiff-terrain-v0 --num_envs 32
 
 # 指定具体 checkpoint 文件
-isaacplay.py --task mastiff-terrain-v0 --num_envs 32 \
+python3 play.py --task mastiff-terrain-v0 --num_envs 32 \
     --checkpoint scripts/logs/rsl_rl/mastiff-terrain-v0/2026-02-26_15-27-50/model_2000.pt
 
 # 录制视频
-isaacplay.py --task mastiff-terrain-v0 --num_envs 4 --video --video_length 500
+python3 play.py --task mastiff-terrain-v0 --num_envs 4 --video --video_length 500
 ```
 
 > **提示**：回放时自动使用 `MastiffTerrainEnvCfg_PLAY` 配置，该配置自动减少到 32 个环境
@@ -316,10 +358,10 @@ ManagerBasedRLEnvCfg
 | `generated_commands`        | 3    | 目标速度指令$(v_x, v_y, \omega_z)$ |
 | `joint_pos_rel`             | 12   | 关节位置相对默认姿态的偏差           |
 | `joint_vel_rel`             | 12   | 关节速度                             |
-| `last_action`               | 12   | 上一时刻的动作（历史信息）           |
-| `height_scan`（仅地形任务） | 169  | 高度扫描图（13×13，分辨率 0.2m）    |
+| `last_action`               | 4    | 上一时刻的 CPG 参数动作（历史信息）  |
+| `height_scan`（critic-only）| 169  | 高度扫描图（13×13，分辨率 0.2m）    |
 
-**总计**：平地任务约 **48 维**，地形任务约 **217 维**。
+**总计**：actor 约 **40 维**（仅本体运动学信息），critic 约 **209 维**（含 `height_scan` 特权信息）。
 
 > **自定义观测**：在 `tasks/mdp/observations.py` 中定义函数，
 > 签名为 `def my_obs(env: ManagerBasedRLEnv, ...) -> torch.Tensor`，
@@ -328,15 +370,14 @@ ManagerBasedRLEnvCfg
 ### 6.3 动作 Actions
 
 ```python
-joint_pos = mdp.JointPositionActionCfg(
+cpg = CPGPositionActionCfg(
     asset_name="robot",
-    joint_names=[".*"],   # 正则匹配所有 12 个关节
-    scale=0.5,            # 动作缩放：策略输出 ∈ [-1, 1] → 关节增量 ∈ [-0.5, 0.5] rad
-    use_default_offset=True,  # 动作叠加在默认关节角度上
+    joint_names=[".*"],
+    # policy 输出 4 维: [step_height, step_length, frequency, turn_rate]
 )
 ```
 
-最终发送给关节的目标位置：$q_{des} = q_{default} + \text{scale} \times a_t$
+策略不再直接输出 12 个关节角，而是输出 CPG 轨迹参数；动作项在每个物理步内通过预规划轨迹 + IK 生成各关节位置目标，从而显著缩小搜索空间。
 
 ### 6.4 奖励 Rewards
 

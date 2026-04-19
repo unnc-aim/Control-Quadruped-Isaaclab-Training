@@ -21,6 +21,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise, AdditiveGaus
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
 from .mdp.terrain_cfg import PhantomX_ROUGH_TERRAINS_CFG
+from .mdp import CPGPositionActionCfg
 
 ##
 # Pre-defined configs
@@ -31,6 +32,10 @@ from pathlib import Path
 _PROJECT_PATH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_PATH))
 from assets.Mastiff_CFG import Mastiff_CONFIG as _ROBOT_CONFIG
+
+# Height-related defaults for easier tuning.
+DESIRED_BASE_HEIGHT_M = 0.35
+CPG_GROUND_HEIGHT_M = -0.35
 
 ##
 # Scene definition
@@ -73,7 +78,7 @@ class MyTerrainSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=_ROBOT_CONFIG.spawn.replace(activate_contact_sensors=True),
         init_state=_ROBOT_CONFIG.init_state.replace(
-            pos=(0.0, 0.0, 0.6),
+            pos=(0.0, 0.0, DESIRED_BASE_HEIGHT_M),
         ),
     )
 
@@ -104,16 +109,16 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 20.0),
-        rel_standing_envs=0.02,
+        resampling_time_range=(20.0, 30.0),
+        rel_standing_envs=0.0,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.0, 1.0),
-            lin_vel_y=(0.0, 0.0),
-            ang_vel_z=(0.0, 0.0),
+            lin_vel_x=(-1.0, 1.0),
+            lin_vel_y=(-0.5, 0.5),
+            ang_vel_z=(-1.0, 1.0),
             heading=(-math.pi, math.pi),
         ),
     )
@@ -123,11 +128,71 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(
+    cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=0.5,
-        use_default_offset=True,
+        step_height=0.05,
+        step_length=0.06,
+        step_frequency=1.2,
+        step_direction=1.0,
+        gait_type="trot",
+        swing_vel_limits=(0.1, -0.2),
+        step_height_min=0.0,
+        step_height_max=0.08,
+        step_length_min=0.0,
+        step_length_max=0.12,
+        step_frequency_min=0.0,
+        step_frequency_max=3.0,
+        command_name="base_velocity",
+        command_speed_to_step_length=0.07,
+        command_speed_to_frequency=0.1,
+        command_ang_vel_to_turn_rate=1.0,
+        yaw_step_length_max=0.04,
+        step_height_residual_scale=0.008,
+        step_length_residual_scale=0.012,
+        step_frequency_residual_scale=0.2,
+        turn_rate_residual_scale=0.1,
+        center_offset=-0.0269,
+        ground_height=CPG_GROUND_HEIGHT_M,
+        stance_depth=0.02,
+        legs_config={
+            "FL": {
+                "coxa": "HAA_FRONT_LEFT",
+                "femur": "HFE_FRONT_LEFT",
+                "tibia": "KFE_FRONT_LEFT",
+                "body_angle": 0.0,
+                "phase_offset_deg": 0.0,
+                "direction_multiplier": 1.0,
+                "side": "left",
+            },
+            "FR": {
+                "coxa": "HAA_FRONT_RIGHT",
+                "femur": "HFE_FRONT_RIGHT",
+                "tibia": "KFE_FRONT_RIGHT",
+                "body_angle": 0.0,
+                "phase_offset_deg": 180.0,
+                "direction_multiplier": -1.0,
+                "side": "right",
+            },
+            "RL": {
+                "coxa": "HAA_REAR_LEFT",
+                "femur": "HFE_REAR_LEFT",
+                "tibia": "KFE_REAR_LEFT",
+                "body_angle": 0.0,
+                "phase_offset_deg": 180.0,
+                "direction_multiplier": 1.0,
+                "side": "left",
+            },
+            "RR": {
+                "coxa": "HAA_REAR_RIGHT",
+                "femur": "HFE_REAR_RIGHT",
+                "tibia": "KFE_REAR_RIGHT",
+                "body_angle": 0.0,
+                "phase_offset_deg": 0.0,
+                "direction_multiplier": -1.0,
+                "side": "right",
+            },
+        },
     )
 
 
@@ -149,6 +214,23 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        """Privileged observations for critic group."""
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
+        base_orientation = ObsTerm(func=mdp.projected_gravity)
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+        )
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        actions = ObsTerm(func=mdp.last_action)
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -160,6 +242,7 @@ class ObservationsCfg:
             self.concatenate_terms = True
 
     policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
 
 
 @configclass
@@ -273,6 +356,7 @@ class RewardsCfg:
     #     weight=-0.25,
     #     params={
     #         "sensor_cfg": SceneEntityCfg("contact_sensor", body_names="Foot_.*"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="Foot_.*"),
     #     },
     # )
 
@@ -283,7 +367,7 @@ class RewardsCfg:
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-20.0,
-        params={"target_height": 0.65},
+        params={"target_height": DESIRED_BASE_HEIGHT_M},
     )
 
     # 关节加速度：平滑关节运动，抑制抽搐/急停急走
@@ -293,7 +377,8 @@ class RewardsCfg:
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-7)
 
     # 动作变化率：相邻帧动作差异过大则惩罚，抑制抖动
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
+    # Per-leg CPG residual action is now 16D for quadruped; keep per-dimension penalty strength unchanged.
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0005)
 
     # 大腿非期望接触（软约束替代硬终止）
     undesired_thigh_contact = RewTerm(
