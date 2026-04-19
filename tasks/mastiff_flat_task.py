@@ -101,7 +101,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=False,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0),
+            lin_vel_x=(0.9, 1.0),
             lin_vel_y=(-1.0, 1.0),
             ang_vel_z=(-0.5, 0.5),
             heading=(-math.pi/2,math.pi/2),
@@ -115,7 +115,7 @@ class ActionsCfg:
     cpg = CPGPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        step_height=0.12,
+        step_height=0.03,
         step_length=0.18,
         step_frequency=2,
         step_direction=1.0,

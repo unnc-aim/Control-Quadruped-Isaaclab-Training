@@ -1,5 +1,5 @@
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg, DCMotorCfg
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.sensors import RayCasterCfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
@@ -43,34 +43,28 @@ Mastiff_CONFIG = ArticulationCfg(
     ),
     actuators={
         # Hip Abduction/Adduction joints (HAA)
-        "haa_actuator": DCMotorCfg(
+        "haa_actuator": ImplicitActuatorCfg(
             joint_names_expr=["HAA_.*"],
-            effort_limit=40.0,           # rated (continuous) torque [Nm]
-            saturation_effort=120.0,     # peak (stall) torque [Nm]
-            velocity_limit=20.94,        # no-load max speed @ 48 V [rad/s]
-            stiffness=80.0,              # Kp  [Nm/rad]
+            effort_limit=4000.0,           # rated (continuous) torque [Nm]
+            velocity_limit=2000.94,        # no-load max speed @ 48 V [rad/s]
+            stiffness=1e6,               # Kp  [Nm/rad]
             damping=2.0,                 # Kd  [Nm·s/rad]
-            friction=0.0,
         ),
         # Hip Flexion/Extension joints (HFE)
-        "hfe_actuator": DCMotorCfg(
+        "hfe_actuator": ImplicitActuatorCfg(
             joint_names_expr=["HFE_.*"],
-            effort_limit=40.0,
-            saturation_effort=120.0,
-            velocity_limit=20.94,
-            stiffness=80.0,
-            damping=2.0,
-            friction=0.0,
+            effort_limit=4000.0,
+            velocity_limit=2000.94,
+            stiffness=1e6,
+            damping=200.0,
         ),
         # Knee Flexion/Extension joints (KFE)
-        "kfe_actuator": DCMotorCfg(
+        "kfe_actuator": ImplicitActuatorCfg(
             joint_names_expr=["KFE_.*"],
-            effort_limit=40.0,
-            saturation_effort=120.0,
-            velocity_limit=20.94,
-            stiffness=80.0,
-            damping=2.0,
-            friction=0.0,
+            effort_limit=4000.0,
+            velocity_limit=2000.94,
+            stiffness=1e6,
+            damping=200.0,
         ),
     },
 )
