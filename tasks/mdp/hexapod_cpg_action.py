@@ -573,17 +573,8 @@ class CPGPositionAction(ActionTerm):
         l_min, l_max = self._step_length_range
         f_min, f_max = self._frequency_range
 
-        raw_step_length = torch.clamp(
-            cmd_lin_speed * self.cfg.command_speed_to_step_length,
-            min=0.0,
-            max=l_max,
-        )
-        min_command_step = min(max(l_min, self.cfg.command_min_step_length), l_max)
-        base_step_length = torch.where(
-            cmd_lin_speed > self.cfg.command_lin_speed_deadband,
-            torch.clamp(raw_step_length, min=min_command_step, max=l_max),
-            torch.zeros_like(raw_step_length),
-        )
+        # Temporarily disable command-speed correction on step length.
+        base_step_length = torch.full_like(cmd_lin_speed, self.step_length)
         base_frequency = torch.clamp(
             self.step_frequency + cmd_lin_speed * self.cfg.command_speed_to_frequency,
             min=f_min,
