@@ -75,3 +75,30 @@ def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: Sce
     is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
     # sum over contacts for each environment
     return torch.sum(is_contact, dim=1)
+
+
+def diagonal_gait_symmetry(
+    env: "ManagerBasedRLEnv",
+    fl_rr_cfg: SceneEntityCfg,
+    fr_rl_cfg: SceneEntityCfg,
+    scale: float = 10.0,
+) -> torch.Tensor:
+    """Reward diagonal gait symmetry for quadrupeds (FL/RR and FR/RL).
+
+    The term compares corresponding joint trajectories of diagonal leg pairs and
+    returns an exponential reward in [0, 1]. Higher values indicate better
+    diagonal synchronization (typical trot-like symmetry).
+    """
+    asset: Articulation = env.scene[fl_rr_cfg.name]
+
+    fl_rr_joint_pos = asset.data.joint_pos[:, fl_rr_cfg.joint_ids]
+    fr_rl_joint_pos = asset.data.joint_pos[:, fr_rl_cfg.joint_ids]
+
+    fl_hfe, fl_kfe, rr_hfe, rr_kfe = torch.chunk(fl_rr_joint_pos, chunks=4, dim=1)
+    fr_hfe, fr_kfe, rl_hfe, rl_kfe = torch.chunk(fr_rl_joint_pos, chunks=4, dim=1)
+
+    err_fl_rr = torch.square(fl_hfe - rr_hfe) + torch.square(fl_kfe - rr_kfe)
+    err_fr_rl = torch.square(fr_hfe - rl_hfe) + torch.square(fr_kfe - rl_kfe)
+
+    mean_err = 0.5 * (err_fl_rr + err_fr_rl).squeeze(1)
+    return torch.exp(-scale * mean_err)
