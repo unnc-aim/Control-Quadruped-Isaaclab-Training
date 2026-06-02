@@ -20,7 +20,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
-from .mdp import CPGPositionActionCfg
+from .mdp import QuadrupedGaitActionCfg
 from . import mdp as custom_mdp
 ##
 # Pre-defined configs
@@ -112,7 +112,7 @@ class CommandsCfg:
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
-    cpg = CPGPositionActionCfg(
+    cpg = QuadrupedGaitActionCfg(
         asset_name="robot",
         joint_names=[".*"],
         step_height=0.03,
@@ -140,7 +140,7 @@ class ActionsCfg:
         debug_print_enabled=False,
         debug_print_interval=120,
         debug_env_index=0,
-        lock_base_in_air=True,
+        lock_base_in_air=False,
         lock_base_height=0.45,
         swap_haa_hfe_targets=False,
         center_offset=-0.0269,
@@ -151,36 +151,28 @@ class ActionsCfg:
                 "coxa": "HAA_FRONT_LEFT",
                 "femur": "HFE_FRONT_LEFT",
                 "tibia": "KFE_FRONT_LEFT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "FR": {
                 "coxa": "HAA_FRONT_RIGHT",
                 "femur": "HFE_FRONT_RIGHT",
                 "tibia": "KFE_FRONT_RIGHT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": -1.0,
                 "side": "right",
             },
             "RL": {
                 "coxa": "HAA_REAR_LEFT",
                 "femur": "HFE_REAR_LEFT",
                 "tibia": "KFE_REAR_LEFT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "RR": {
                 "coxa": "HAA_REAR_RIGHT",
                 "femur": "HFE_REAR_RIGHT",
                 "tibia": "KFE_REAR_RIGHT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": -1.0,
                 "side": "right",
             },
         },

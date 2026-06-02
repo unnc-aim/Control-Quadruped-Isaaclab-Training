@@ -21,7 +21,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise, AdditiveGaus
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.terminations import joint_pos_out_of_manual_limit
 from .mdp.terrain_cfg import PhantomX_ROUGH_TERRAINS_CFG
-from .mdp import CPGPositionActionCfg
+from .mdp import QuadrupedGaitActionCfg
 
 ##
 # Pre-defined configs
@@ -128,7 +128,7 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    cpg = CPGPositionActionCfg(
+    cpg = QuadrupedGaitActionCfg(
         asset_name="robot",
         joint_names=[".*"],
         step_height=0.05,
@@ -160,36 +160,28 @@ class ActionsCfg:
                 "coxa": "HAA_FRONT_LEFT",
                 "femur": "HFE_FRONT_LEFT",
                 "tibia": "KFE_FRONT_LEFT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "FR": {
                 "coxa": "HAA_FRONT_RIGHT",
                 "femur": "HFE_FRONT_RIGHT",
                 "tibia": "KFE_FRONT_RIGHT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": -1.0,
                 "side": "right",
             },
             "RL": {
                 "coxa": "HAA_REAR_LEFT",
                 "femur": "HFE_REAR_LEFT",
                 "tibia": "KFE_REAR_LEFT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 180.0,
-                "direction_multiplier": 1.0,
                 "side": "left",
             },
             "RR": {
                 "coxa": "HAA_REAR_RIGHT",
                 "femur": "HFE_REAR_RIGHT",
                 "tibia": "KFE_REAR_RIGHT",
-                "body_angle": 0.0,
                 "phase_offset_deg": 0.0,
-                "direction_multiplier": -1.0,
                 "side": "right",
             },
         },
