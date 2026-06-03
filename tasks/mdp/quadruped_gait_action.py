@@ -250,6 +250,7 @@ class QuadrupedGaitAction(ActionTerm):
             center_offsets=self.cfg.center_offset,
             side_signs=self._leg_side_signs,
         )
+        raw_joint_targets = joint_targets.clone()
         joint_targets = torch.where(active_mask.unsqueeze(-1) & valid_ik.unsqueeze(-1), joint_targets, torch.zeros_like(joint_targets))
         joint_targets = joint_targets * self._leg_joint_signs.unsqueeze(0)
 
@@ -262,7 +263,7 @@ class QuadrupedGaitAction(ActionTerm):
         self._processed_actions.scatter_(1, self._leg_tibia_indices.unsqueeze(0).expand(self.num_envs, -1), joint_targets[:, :, 2])
 
         self._asset.set_joint_position_target(self._processed_actions)
-        self._maybe_log_debug(command, step_vectors, foot_targets, joint_targets, active_mask, valid_ik)
+        self._maybe_log_debug(command, step_vectors, foot_targets, raw_joint_targets, joint_targets, active_mask, valid_ik)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         if env_ids is None:
@@ -335,6 +336,7 @@ class QuadrupedGaitAction(ActionTerm):
         command: torch.Tensor,
         step_vectors: torch.Tensor,
         foot_targets: torch.Tensor,
+        raw_joint_targets: torch.Tensor,
         joint_targets: torch.Tensor,
         active_mask: torch.Tensor,
         valid_ik: torch.Tensor,
@@ -347,23 +349,90 @@ class QuadrupedGaitAction(ActionTerm):
 
         env_idx = min(max(int(self.cfg.debug_env_index), 0), self.num_envs - 1)
         cmd = command[env_idx]
+        lab_joint_pos = getattr(self._asset.data, "joint_pos", None)
+        joint_limits = self._get_joint_limits_tensor()
+        selected_target_tensor = ", ".join(
+            f"{name}={self._processed_actions[env_idx, joint_id].item():+.4f}"
+            for joint_id, name in zip(self._joint_ids, self._joint_names, strict=False)
+        )
+        if isinstance(lab_joint_pos, torch.Tensor):
+            selected_joint_pos_tensor = ", ".join(
+                f"{name}={lab_joint_pos[env_idx, joint_id].item():+.4f}"
+                for joint_id, name in zip(self._joint_ids, self._joint_names, strict=False)
+            )
+        else:
+            selected_joint_pos_tensor = "unavailable"
+        if joint_limits is not None:
+            lower_all, upper_all = joint_limits
+            selected_joint_limit_tensor = ", ".join(
+                f"{name}=[{lower_all[env_idx, joint_id].item():+.4f},{upper_all[env_idx, joint_id].item():+.4f}]"
+                for joint_id, name in zip(self._joint_ids, self._joint_names, strict=False)
+            )
+        else:
+            selected_joint_limit_tensor = "unavailable"
+
         print(
             f"[QuadrupedGaitDebug] step={step_idx} env={env_idx} "
             f"cmd=({cmd[0].item():+.3f},{cmd[1].item():+.3f},{cmd[2].item():+.3f}) "
             f"active={int(active_mask[env_idx].sum().item())}/{self._leg_count} "
             f"ik={int(valid_ik[env_idx].sum().item())}/{self._leg_count}"
         )
+        print(f"[QuadrupedGaitDebug][LabTargetTensor] {selected_target_tensor}")
+        print(f"[QuadrupedGaitDebug][LabJointPosTensor] {selected_joint_pos_tensor}")
+        print(f"[QuadrupedGaitDebug][JointLimitTensor] {selected_joint_limit_tensor}")
         for leg_idx, leg in enumerate(self.legs):
             phase_deg = math.degrees(float(self._leg_phases[env_idx, leg_idx].item()))
             step_vec = step_vectors[env_idx, leg_idx]
             target = foot_targets[env_idx, leg_idx]
-            joints = joint_targets[env_idx, leg_idx]
+            raw_planner_joints = raw_joint_targets[env_idx, leg_idx]
+            planner_joints = joint_targets[env_idx, leg_idx]
+            coxa_idx = int(self._leg_coxa_indices[leg_idx].item())
+            femur_idx = int(self._leg_femur_indices[leg_idx].item())
+            tibia_idx = int(self._leg_tibia_indices[leg_idx].item())
+            lab_target_joints = self._processed_actions[env_idx, [coxa_idx, femur_idx, tibia_idx]]
+            if isinstance(lab_joint_pos, torch.Tensor):
+                lab_joint_joints = lab_joint_pos[env_idx, [coxa_idx, femur_idx, tibia_idx]]
+                lab_joint_str = (
+                    f"lab_q=(HAA={lab_joint_joints[0].item():+.4f},"
+                    f"HFE={lab_joint_joints[1].item():+.4f},"
+                    f"KFE={lab_joint_joints[2].item():+.4f}) "
+                )
+            else:
+                lab_joint_str = "lab_q=(unavailable) "
+            if joint_limits is not None:
+                leg_lower = torch.stack((
+                    lower_all[env_idx, coxa_idx],
+                    lower_all[env_idx, femur_idx],
+                    lower_all[env_idx, tibia_idx],
+                ))
+                leg_upper = torch.stack((
+                    upper_all[env_idx, coxa_idx],
+                    upper_all[env_idx, femur_idx],
+                    upper_all[env_idx, tibia_idx],
+                ))
+                limit_str = (
+                    f"limits=(HAA=[{leg_lower[0].item():+.4f},{leg_upper[0].item():+.4f}],"
+                    f"HFE=[{leg_lower[1].item():+.4f},{leg_upper[1].item():+.4f}],"
+                    f"KFE=[{leg_lower[2].item():+.4f},{leg_upper[2].item():+.4f}]) "
+                )
+            else:
+                limit_str = "limits=(unavailable) "
             print(
                 f"[QuadrupedGaitDebug][{leg['name']}] "
                 f"phase={phase_deg:6.1f} "
                 f"step=({step_vec[0].item():+.4f},{step_vec[1].item():+.4f}) "
                 f"target=({target[0].item():+.4f},{target[1].item():+.4f},{target[2].item():+.4f}) "
-                f"q=({joints[0].item():+.4f},{joints[1].item():+.4f},{joints[2].item():+.4f}) "
+                f"raw_ik_q=(HAA={raw_planner_joints[0].item():+.4f},"
+                f"HFE={raw_planner_joints[1].item():+.4f},"
+                f"KFE={raw_planner_joints[2].item():+.4f}) "
+                f"planner_q=(HAA={planner_joints[0].item():+.4f},"
+                f"HFE={planner_joints[1].item():+.4f},"
+                f"KFE={planner_joints[2].item():+.4f}) "
+                f"target_q=(HAA={lab_target_joints[0].item():+.4f},"
+                f"HFE={lab_target_joints[1].item():+.4f},"
+                f"KFE={lab_target_joints[2].item():+.4f}) "
+                f"{lab_joint_str}"
+                f"{limit_str}"
                 f"active={'Y' if bool(active_mask[env_idx, leg_idx].item()) else 'N'} "
                 f"ik={'Y' if bool(valid_ik[env_idx, leg_idx].item()) else 'N'}"
             )
