@@ -44,9 +44,36 @@ parser.add_argument("--settle-steps", type=int, default=180)
 parser.add_argument("--pause-steps", type=int, default=60)
 parser.add_argument(
     "--target-mode",
-    choices=("sequence", "standing_input", "ik_roundtrip", "zero"),
+    choices=("sequence", "standing_input", "ik_roundtrip", "zero", "gait_cycle"),
     default="sequence",
     help="Which pose to command into the simulator.",
+)
+parser.add_argument("--gait-step-x", type=float, default=0.15, help="Body-frame gait step displacement in +X, meters.")
+parser.add_argument("--gait-step-y", type=float, default=0.0, help="Body-frame gait step displacement in +Y, meters.")
+parser.add_argument("--gait-step-height", type=float, default=0.10, help="Swing foot lift for gait-cycle playback, meters.")
+parser.add_argument(
+    "--gait-cycle-frames",
+    type=int,
+    default=120,
+    help="Number of frames used to sample one full gait cycle.",
+)
+parser.add_argument(
+    "--gait-frame-hold-steps",
+    type=int,
+    default=2,
+    help="Simulator steps to hold each sampled gait frame before advancing to the next one.",
+)
+parser.add_argument(
+    "--gait-log-every-frame",
+    action="store_true",
+    default=False,
+    help="Print per-frame gait diagnostics including target, planner, sim, and measured joint values.",
+)
+parser.add_argument(
+    "--gait-log-frame-stride",
+    type=int,
+    default=1,
+    help="Only print every Nth frame when --gait-log-every-frame is enabled.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -150,14 +177,24 @@ def leg_joint_sign_matrix() -> torch.Tensor:
     return torch.stack([LEG_JOINT_SIGNS[leg_name] for leg_name in LEG_ORDER], dim=0)
 
 
-def print_joint_group_snapshot(robot: Articulation, joint_id_map: dict[str, tuple[int, int, int]], label: str) -> None:
-    values = []
-    for leg_name in LEG_ORDER:
+def measured_leg_joint_positions(robot: Articulation, joint_id_map: dict[str, tuple[int, int, int]]) -> torch.Tensor:
+    measured = torch.zeros((len(LEG_ORDER), 3), dtype=torch.float64)
+    for leg_index, leg_name in enumerate(LEG_ORDER):
         haa_id, hfe_id, kfe_id = joint_id_map[leg_name]
+        measured[leg_index, 0] = float(robot.data.joint_pos[0, haa_id].item())
+        measured[leg_index, 1] = float(robot.data.joint_pos[0, hfe_id].item())
+        measured[leg_index, 2] = float(robot.data.joint_pos[0, kfe_id].item())
+    return measured
+
+
+def print_joint_group_snapshot(robot: Articulation, joint_id_map: dict[str, tuple[int, int, int]], label: str) -> None:
+    measured = measured_leg_joint_positions(robot, joint_id_map)
+    values = []
+    for leg_index, leg_name in enumerate(LEG_ORDER):
         values.append(
-            f"{leg_name}=(HAA={robot.data.joint_pos[0, haa_id].item():+.4f},"
-            f"HFE={robot.data.joint_pos[0, hfe_id].item():+.4f},"
-            f"KFE={robot.data.joint_pos[0, kfe_id].item():+.4f})"
+            f"{leg_name}=(HAA={measured[leg_index, 0].item():+.4f},"
+            f"HFE={measured[leg_index, 1].item():+.4f},"
+            f"KFE={measured[leg_index, 2].item():+.4f})"
         )
     print(f"[MastiffIKDiag][Measured][{label}] " + "; ".join(values))
 
@@ -177,7 +214,7 @@ def print_leg_limit_snapshot(robot: Articulation, joint_id_map: dict[str, tuple[
         )
 
 
-def build_pose_bundle() -> dict[str, torch.Tensor]:
+def build_pose_bundle() -> dict[str, torch.Tensor | object]:
     module = load_generator_module()
     geometry = module.QuadrupedGeometry(
         femur_zero_angle_global=math.radians(args_cli.femur_zero_angle_global_deg),
@@ -214,6 +251,8 @@ def build_pose_bundle() -> dict[str, torch.Tensor]:
     ik_sim = planner_to_sim(ik_planner, joint_signs)
 
     return {
+        "generator": generator,
+        "side_signs": side_signs,
         "joint_signs": joint_signs,
         "standing_input": standing_input,
         "standing_planner": standing_planner_legs,
@@ -236,7 +275,47 @@ def build_sim_target(zero_joint_pos: torch.Tensor, joint_id_map: dict[str, tuple
     return target
 
 
-def print_pose_report(bundle: dict[str, torch.Tensor]) -> None:
+def build_gait_cycle_bundle(bundle: dict[str, torch.Tensor | object]) -> dict[str, torch.Tensor]:
+    frame_count = max(int(args_cli.gait_cycle_frames), 2)
+    hold_steps = max(int(args_cli.gait_frame_hold_steps), 1)
+    generator = bundle["generator"]
+    side_signs = bundle["side_signs"]
+    joint_signs = bundle["joint_signs"]
+    standing_home = bundle["standing_home"]
+    standing_planner = bundle["standing_planner"]
+
+    phase_scalars = torch.linspace(0.0, 2.0 * math.pi, steps=frame_count + 1, dtype=torch.float64)[:-1]
+    phase_offsets = generator.phase_offsets.to(dtype=torch.float64)
+    phases = (phase_scalars.unsqueeze(-1) + phase_offsets.unsqueeze(0)) % (2.0 * math.pi)
+
+    step_vector = torch.tensor([args_cli.gait_step_x, args_cli.gait_step_y], dtype=torch.float64)
+    step_vectors = step_vector.view(1, 1, 2).repeat(frame_count, len(LEG_ORDER), 1)
+    step_heights = torch.full((frame_count, len(LEG_ORDER)), float(args_cli.gait_step_height), dtype=torch.float64)
+    ground_heights = torch.zeros((frame_count, len(LEG_ORDER)), dtype=torch.float64)
+    home_positions = standing_home.unsqueeze(0).expand(frame_count, -1, -1)
+
+    gait_planner, gait_targets, gait_valid_ik = generator.joint_targets_from_phase(
+        phases,
+        step_vectors,
+        step_heights,
+        ground_heights,
+        side_signs=side_signs,
+        home_positions=home_positions,
+    )
+    gait_planner = torch.where(gait_valid_ik.unsqueeze(-1), gait_planner, standing_planner.unsqueeze(0))
+    gait_sim = planner_to_sim(gait_planner, joint_signs.unsqueeze(0))
+    return {
+        "phases": phases,
+        "foot_targets": gait_targets,
+        "planner_targets": gait_planner,
+        "sim_targets": gait_sim,
+        "valid_ik": gait_valid_ik,
+        "frame_count": torch.tensor(frame_count, dtype=torch.int64),
+        "hold_steps": torch.tensor(hold_steps, dtype=torch.int64),
+    }
+
+
+def print_pose_report(bundle: dict[str, torch.Tensor | object]) -> None:
     print("[MastiffIKDiag] configuration")
     print(
         f"  zero_angles_deg=(femur={args_cli.femur_zero_angle_global_deg:+.3f}, "
@@ -271,6 +350,52 @@ def print_pose_report(bundle: dict[str, torch.Tensor]) -> None:
         )
 
 
+def print_gait_cycle_report(gait_bundle: dict[str, torch.Tensor]) -> None:
+    frame_count = int(gait_bundle["frame_count"].item())
+    valid_counts = gait_bundle["valid_ik"].sum(dim=0).tolist()
+    print(
+        f"[MastiffIKDiag][GaitCycle] step_xy_m=({args_cli.gait_step_x:+.4f},{args_cli.gait_step_y:+.4f}) "
+        f"step_height_m={args_cli.gait_step_height:+.4f} frames={frame_count} "
+        f"hold_steps={int(gait_bundle['hold_steps'].item())}"
+    )
+    for leg_index, leg_name in enumerate(LEG_ORDER):
+        first_target = gait_bundle["foot_targets"][0, leg_index] * 1000.0
+        first_planner_deg = torch.rad2deg(gait_bundle["planner_targets"][0, leg_index]).tolist()
+        first_sim_deg = torch.rad2deg(gait_bundle["sim_targets"][0, leg_index]).tolist()
+        print(
+            f"[MastiffIKDiag][GaitCycle][{leg_name}] "
+            f"valid_frames={int(valid_counts[leg_index])}/{frame_count} "
+            f"frame0_target_mm=({first_target[0].item():+.1f},{first_target[1].item():+.1f},{first_target[2].item():+.1f}) "
+            f"frame0_planner_deg=(HAA={first_planner_deg[0]:+.3f},HFE={first_planner_deg[1]:+.3f},KFE={first_planner_deg[2]:+.3f}) "
+            f"frame0_sim_deg=(HAA={first_sim_deg[0]:+.3f},HFE={first_sim_deg[1]:+.3f},KFE={first_sim_deg[2]:+.3f})"
+        )
+
+
+def print_gait_cycle_frame_log(
+    frame_index: int,
+    gait_bundle: dict[str, torch.Tensor],
+    measured_sim: torch.Tensor,
+) -> None:
+    phase_deg = torch.rad2deg(gait_bundle["phases"][frame_index])
+    foot_targets_mm = gait_bundle["foot_targets"][frame_index] * 1000.0
+    planner_deg = torch.rad2deg(gait_bundle["planner_targets"][frame_index])
+    sim_deg = torch.rad2deg(gait_bundle["sim_targets"][frame_index])
+    measured_deg = torch.rad2deg(measured_sim)
+    valid_ik = gait_bundle["valid_ik"][frame_index]
+
+    print(f"[MastiffIKDiag][Frame {frame_index:03d}]")
+    for leg_index, leg_name in enumerate(LEG_ORDER):
+        print(
+            f"[MastiffIKDiag][Frame {frame_index:03d}][{leg_name}] "
+            f"phase_deg={phase_deg[leg_index].item():6.1f} "
+            f"ik_valid={'Y' if bool(valid_ik[leg_index].item()) else 'N'} "
+            f"target_mm=(x={foot_targets_mm[leg_index, 0].item():+.1f},y={foot_targets_mm[leg_index, 1].item():+.1f},z={foot_targets_mm[leg_index, 2].item():+.1f}) "
+            f"planner_deg=(HAA={planner_deg[leg_index, 0].item():+.3f},HFE={planner_deg[leg_index, 1].item():+.3f},KFE={planner_deg[leg_index, 2].item():+.3f}) "
+            f"sim_deg=(HAA={sim_deg[leg_index, 0].item():+.3f},HFE={sim_deg[leg_index, 1].item():+.3f},KFE={sim_deg[leg_index, 2].item():+.3f}) "
+            f"measured_deg=(HAA={measured_deg[leg_index, 0].item():+.3f},HFE={measured_deg[leg_index, 1].item():+.3f},KFE={measured_deg[leg_index, 2].item():+.3f})"
+        )
+
+
 def run_pose(
     sim: SimulationContext,
     robot: Articulation,
@@ -293,6 +418,35 @@ def run_pose(
     print_joint_group_snapshot(robot, joint_id_map, label)
 
 
+def run_gait_cycle(
+    sim: SimulationContext,
+    robot: Articulation,
+    joint_id_map: dict[str, tuple[int, int, int]],
+    zero_joint_pos: torch.Tensor,
+    locked_root_pose: torch.Tensor,
+    locked_root_vel: torch.Tensor,
+    gait_bundle: dict[str, torch.Tensor],
+) -> None:
+    frame_count = int(gait_bundle["frame_count"].item())
+    hold_steps = int(gait_bundle["hold_steps"].item())
+    log_stride = max(int(args_cli.gait_log_frame_stride), 1)
+    print("[MastiffIKDiag] commanding repeated gait cycle")
+    first_cycle = True
+    while simulation_app.is_running():
+        for frame_index in range(frame_count):
+            leg_joint_targets_sim = gait_bundle["sim_targets"][frame_index]
+            target = build_sim_target(zero_joint_pos, joint_id_map, leg_joint_targets_sim)
+            step_with_targets(sim, robot, target, locked_root_pose, locked_root_vel, hold_steps)
+            if args_cli.gait_log_every_frame and (frame_index % log_stride == 0):
+                measured_sim = measured_leg_joint_positions(robot, joint_id_map)
+                print_gait_cycle_frame_log(frame_index, gait_bundle, measured_sim)
+            elif first_cycle and frame_index in (0, frame_count // 4, frame_count // 2, (3 * frame_count) // 4):
+                print_joint_group_snapshot(robot, joint_id_map, f"gait_cycle_frame{frame_index}")
+            if not simulation_app.is_running():
+                break
+        first_cycle = False
+
+
 def run_diagnostic(sim: SimulationContext, robot: Articulation, origins: torch.Tensor) -> None:
     locked_root_pose, locked_root_vel, zero_joint_pos, _ = reset_robot(robot, origins, args_cli.hold_base_height)
     joint_id_map: dict[str, tuple[int, int, int]] = {}
@@ -310,11 +464,16 @@ def run_diagnostic(sim: SimulationContext, robot: Articulation, origins: torch.T
 
     bundle = build_pose_bundle()
     print_pose_report(bundle)
+    gait_bundle = build_gait_cycle_bundle(bundle)
+    print_gait_cycle_report(gait_bundle)
 
     zero_pose_sim = torch.zeros(len(LEG_ORDER), 3, dtype=torch.float64)
     standing_sim = bundle["standing_sim"]
     ik_sim = bundle["ik_sim"]
 
+    if args_cli.target_mode == "gait_cycle":
+        run_gait_cycle(sim, robot, joint_id_map, zero_joint_pos, locked_root_pose, locked_root_vel, gait_bundle)
+        return
     if args_cli.target_mode == "zero":
         run_pose(sim, robot, joint_id_map, zero_joint_pos, locked_root_pose, locked_root_vel, "zero", zero_pose_sim)
     elif args_cli.target_mode == "standing_input":
