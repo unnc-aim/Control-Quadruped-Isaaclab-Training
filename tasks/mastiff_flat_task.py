@@ -142,7 +142,12 @@ class ActionsCfg:
         debug_env_index=0,
         lock_base_in_air=True,
         lock_base_height=0.45,
-        swap_haa_hfe_targets=False,
+        femur_zero_angle_global_deg=-150.0,
+        tibia_zero_angle_relative_deg=15.0,
+        # Standing pose is expressed in planner space; per-leg joint_signs map it to simulator joints.
+        standing_haa_deg=0.0,
+        standing_hfe_deg=0.0,
+        standing_kfe_deg=40.0,
         center_offset=-0.0269,
         ground_height=CPG_GROUND_HEIGHT_M,
         stance_depth=0.01,
@@ -153,6 +158,9 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_LEFT",
                 "phase_offset_deg": 0.0,
                 "side": "left",
+                "haa_sign": +1.0,
+                "hfe_sign": +1.0,
+                "kfe_sign": -1.0,
             },
             "FR": {
                 "coxa": "HAA_FRONT_RIGHT",
@@ -160,6 +168,9 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_RIGHT",
                 "phase_offset_deg": 180.0,
                 "side": "right",
+                "haa_sign": +1.0,
+                "hfe_sign": -1.0,
+                "kfe_sign": -1.0,
             },
             "RL": {
                 "coxa": "HAA_REAR_LEFT",
@@ -167,6 +178,9 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_LEFT",
                 "phase_offset_deg": 180.0,
                 "side": "left",
+                "haa_sign": -1.0,
+                "hfe_sign": +1.0,
+                "kfe_sign": -1.0,
             },
             "RR": {
                 "coxa": "HAA_REAR_RIGHT",
@@ -174,6 +188,9 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_RIGHT",
                 "phase_offset_deg": 0.0,
                 "side": "right",
+                "haa_sign": -1.0,
+                "hfe_sign": -1.0,
+                "kfe_sign": -1.0,
             },
         },
     )

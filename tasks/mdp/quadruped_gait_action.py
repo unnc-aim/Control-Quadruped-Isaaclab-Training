@@ -23,6 +23,8 @@ class QuadrupedGaitAction(ActionTerm):
     The gait generator uses USD/body coordinates directly:
     +X is forward, +Y is left, and all four leg target frames share those axes.
     Targets are expressed relative to each leg's HAA origin.
+    The generator produces planner-space joint targets; per-leg ``joint_signs``
+    convert those planner targets into simulator joint directions.
     """
 
     cfg: QuadrupedGaitActionCfg
@@ -51,12 +53,24 @@ class QuadrupedGaitAction(ActionTerm):
                 self._locked_root_pose[:, 2] = cfg.lock_base_height
             self._locked_root_vel = torch.zeros_like(default_root_state[:, 7:])
 
+        femur_zero_angle_global_deg = self._resolve_zero_angle_deg(
+            cfg.femur_zero_angle_global_deg,
+            cfg.femur_rest_angle_global_deg,
+            "femur_zero_angle_global_deg",
+            "femur_rest_angle_global_deg",
+        )
+        tibia_zero_angle_relative_deg = self._resolve_zero_angle_deg(
+            cfg.tibia_zero_angle_relative_deg,
+            cfg.tibia_rest_angle_relative_deg,
+            "tibia_zero_angle_relative_deg",
+            "tibia_rest_angle_relative_deg",
+        )
         geometry = QuadrupedGeometry(
             l_coxa=cfg.l_coxa,
             l_femur=cfg.l_femur,
             l_tibia=cfg.l_tibia,
-            femur_rest_angle_global=math.radians(cfg.femur_rest_angle_global_deg),
-            tibia_rest_angle_relative=math.radians(cfg.tibia_rest_angle_relative_deg),
+            femur_zero_angle_global=math.radians(femur_zero_angle_global_deg),
+            tibia_zero_angle_relative=math.radians(tibia_zero_angle_relative_deg),
         )
 
         self.legs: list[dict] = []
@@ -125,6 +139,14 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_coxa_indices = torch.tensor([leg["coxa_idx"] for leg in self.legs], device=self.device)
             self._leg_femur_indices = torch.tensor([leg["femur_idx"] for leg in self.legs], device=self.device)
             self._leg_tibia_indices = torch.tensor([leg["tibia_idx"] for leg in self.legs], device=self.device)
+            self._standing_joint_targets = self._resolve_standing_joint_targets()
+            if self._standing_joint_targets is not None:
+                self._nominal_home_positions = self._generator.nominal_standing_foot_positions(
+                    self._standing_joint_targets,
+                    self._leg_side_signs,
+                )
+            else:
+                self._nominal_home_positions = None
         else:
             self._leg_phases = torch.zeros(self.num_envs, 0, device=self.device, dtype=torch.float32)
             self._initial_leg_phases = torch.zeros(0, device=self.device, dtype=torch.float32)
@@ -134,6 +156,8 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_coxa_indices = torch.zeros(0, device=self.device, dtype=torch.long)
             self._leg_femur_indices = torch.zeros(0, device=self.device, dtype=torch.long)
             self._leg_tibia_indices = torch.zeros(0, device=self.device, dtype=torch.long)
+            self._standing_joint_targets = None
+            self._nominal_home_positions = None
 
         self._rl_action_dim = self._leg_count * 4
         self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
@@ -249,21 +273,35 @@ class QuadrupedGaitAction(ActionTerm):
             self.cfg.ground_height,
             center_offsets=self.cfg.center_offset,
             side_signs=self._leg_side_signs,
+            home_positions=self._nominal_home_positions,
         )
         raw_joint_targets = joint_targets.clone()
-        joint_targets = torch.where(active_mask.unsqueeze(-1) & valid_ik.unsqueeze(-1), joint_targets, torch.zeros_like(joint_targets))
-        joint_targets = joint_targets * self._leg_joint_signs.unsqueeze(0)
+        default_joint_targets = torch.zeros_like(joint_targets)
+        if self._standing_joint_targets is not None:
+            default_joint_targets = self._standing_joint_targets.unsqueeze(0).expand(self.num_envs, -1, -1)
+        planner_joint_targets = torch.where(active_mask.unsqueeze(-1), joint_targets, default_joint_targets)
+        planner_joint_targets = torch.where(valid_ik.unsqueeze(-1), planner_joint_targets, default_joint_targets)
+        sim_joint_targets = planner_joint_targets * self._leg_joint_signs.unsqueeze(0)
 
         if self.cfg.clip_joint_targets:
-            joint_targets = self._clip_leg_joint_targets(joint_targets)
+            sim_joint_targets = self._clip_leg_joint_targets(sim_joint_targets)
 
         self._processed_actions.zero_()
-        self._processed_actions.scatter_(1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), joint_targets[:, :, 0])
-        self._processed_actions.scatter_(1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), joint_targets[:, :, 1])
-        self._processed_actions.scatter_(1, self._leg_tibia_indices.unsqueeze(0).expand(self.num_envs, -1), joint_targets[:, :, 2])
+        self._processed_actions.scatter_(1, self._leg_coxa_indices.unsqueeze(0).expand(self.num_envs, -1), sim_joint_targets[:, :, 0])
+        self._processed_actions.scatter_(1, self._leg_femur_indices.unsqueeze(0).expand(self.num_envs, -1), sim_joint_targets[:, :, 1])
+        self._processed_actions.scatter_(1, self._leg_tibia_indices.unsqueeze(0).expand(self.num_envs, -1), sim_joint_targets[:, :, 2])
 
         self._asset.set_joint_position_target(self._processed_actions)
-        self._maybe_log_debug(command, step_vectors, foot_targets, raw_joint_targets, joint_targets, active_mask, valid_ik)
+        self._maybe_log_debug(
+            command,
+            step_vectors,
+            foot_targets,
+            raw_joint_targets,
+            planner_joint_targets,
+            sim_joint_targets,
+            active_mask,
+            valid_ik,
+        )
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         if env_ids is None:
@@ -294,6 +332,44 @@ class QuadrupedGaitAction(ActionTerm):
         tangent_norm = torch.clamp_min(torch.linalg.norm(tangent, dim=-1, keepdim=True), 1.0e-9)
         tangent_unit = tangent / tangent_norm
         return self.cfg.yaw_step_length_max * turn_rates.unsqueeze(-1) * tangent_unit.unsqueeze(0)
+
+    def _resolve_zero_angle_deg(
+        self,
+        zero_angle_deg: float | None,
+        deprecated_angle_deg: float | None,
+        zero_field_name: str,
+        deprecated_field_name: str,
+    ) -> float:
+        if zero_angle_deg is not None:
+            return float(zero_angle_deg)
+        if deprecated_angle_deg is not None:
+            return float(deprecated_angle_deg)
+        raise ValueError(
+            f"QuadrupedGaitAction requires {zero_field_name} or deprecated {deprecated_field_name} to be set."
+        )
+
+    def _resolve_standing_joint_targets(self) -> torch.Tensor | None:
+        standing_fields = (
+            self.cfg.standing_haa_deg,
+            self.cfg.standing_hfe_deg,
+            self.cfg.standing_kfe_deg,
+        )
+        if all(value is None for value in standing_fields):
+            return None
+        if any(value is None for value in standing_fields):
+            raise ValueError(
+                "QuadrupedGaitAction standing pose requires standing_haa_deg, standing_hfe_deg, and standing_kfe_deg."
+            )
+        standing_joint_targets = torch.tensor(
+            [
+                math.radians(float(self.cfg.standing_haa_deg)),
+                math.radians(float(self.cfg.standing_hfe_deg)),
+                math.radians(float(self.cfg.standing_kfe_deg)),
+            ],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        return standing_joint_targets.unsqueeze(0).repeat(self._leg_count, 1)
 
     def _clip_leg_joint_targets(self, joint_targets: torch.Tensor) -> torch.Tensor:
         limits = self._get_joint_limits_tensor()
@@ -336,8 +412,9 @@ class QuadrupedGaitAction(ActionTerm):
         command: torch.Tensor,
         step_vectors: torch.Tensor,
         foot_targets: torch.Tensor,
-        raw_joint_targets: torch.Tensor,
-        joint_targets: torch.Tensor,
+        raw_planner_joint_targets: torch.Tensor,
+        planner_joint_targets: torch.Tensor,
+        sim_joint_targets: torch.Tensor,
         active_mask: torch.Tensor,
         valid_ik: torch.Tensor,
     ) -> None:
@@ -384,8 +461,9 @@ class QuadrupedGaitAction(ActionTerm):
             phase_deg = math.degrees(float(self._leg_phases[env_idx, leg_idx].item()))
             step_vec = step_vectors[env_idx, leg_idx]
             target = foot_targets[env_idx, leg_idx]
-            raw_planner_joints = raw_joint_targets[env_idx, leg_idx]
-            planner_joints = joint_targets[env_idx, leg_idx]
+            raw_planner_joints = raw_planner_joint_targets[env_idx, leg_idx]
+            planner_joints = planner_joint_targets[env_idx, leg_idx]
+            sim_joints = sim_joint_targets[env_idx, leg_idx]
             coxa_idx = int(self._leg_coxa_indices[leg_idx].item())
             femur_idx = int(self._leg_femur_indices[leg_idx].item())
             tibia_idx = int(self._leg_tibia_indices[leg_idx].item())
@@ -428,6 +506,9 @@ class QuadrupedGaitAction(ActionTerm):
                 f"planner_q=(HAA={planner_joints[0].item():+.4f},"
                 f"HFE={planner_joints[1].item():+.4f},"
                 f"KFE={planner_joints[2].item():+.4f}) "
+                f"sim_q=(HAA={sim_joints[0].item():+.4f},"
+                f"HFE={sim_joints[1].item():+.4f},"
+                f"KFE={sim_joints[2].item():+.4f}) "
                 f"target_q=(HAA={lab_target_joints[0].item():+.4f},"
                 f"HFE={lab_target_joints[1].item():+.4f},"
                 f"KFE={lab_target_joints[2].item():+.4f}) "
@@ -468,8 +549,17 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     l_coxa: float = 0.12005
     l_femur: float = 0.260
     l_tibia: float = 0.300
-    femur_rest_angle_global_deg: float = -40.0
-    tibia_rest_angle_relative_deg: float = -100.0
+    femur_zero_angle_global_deg: float | None = None
+    tibia_zero_angle_relative_deg: float | None = None
+
+    # Deprecated compatibility fallbacks for zero-angle mapping.
+    femur_rest_angle_global_deg: float | None = -40.0
+    tibia_rest_angle_relative_deg: float | None = -100.0
+
+    # Optional standing pose in planner joint space, before per-leg joint_signs.
+    standing_haa_deg: float | None = None
+    standing_hfe_deg: float | None = None
+    standing_kfe_deg: float | None = None
 
     # Nominal body dimensions used only for yaw/turn step vectors.
     body_length: float = 0.520

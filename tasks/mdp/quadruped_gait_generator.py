@@ -28,8 +28,8 @@ class QuadrupedGeometry:
     l_coxa: float = 0.12005
     l_femur: float = 0.260
     l_tibia: float = 0.300
-    femur_rest_angle_global: float = math.radians(-40.0)
-    tibia_rest_angle_relative: float = math.radians(-100.0)
+    femur_zero_angle_global: float = math.radians(-150.0)
+    tibia_zero_angle_relative: float = math.radians(15.0)
 
 
 class QuadrupedGaitGenerator:
@@ -76,6 +76,16 @@ class QuadrupedGaitGenerator:
         zeros = torch.zeros((*side_signs.shape, 3), device=side_signs.device, dtype=side_signs.dtype)
         return self.forward_kinematics(zeros, side_signs)[..., -1, :]
 
+    def nominal_standing_foot_positions(
+        self,
+        standing_joint_targets: torch.Tensor,
+        side_signs: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return standing-pose foot positions in the HAA-origin body-aligned frames."""
+        if side_signs is None:
+            side_signs = self.side_signs
+        return self.forward_kinematics(standing_joint_targets, side_signs)[..., -1, :]
+
     def phase_to_targets(
         self,
         phases: torch.Tensor,
@@ -84,6 +94,7 @@ class QuadrupedGaitGenerator:
         ground_heights: torch.Tensor | float,
         center_offsets: torch.Tensor | float | None = None,
         side_signs: torch.Tensor | None = None,
+        home_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Convert gait phase to foot targets.
@@ -98,6 +109,9 @@ class QuadrupedGaitGenerator:
             center_offsets: Optional scalar or shape ``(..., num_legs)`` for
                 the nominal foot X. Defaults to the FK zero-pose X.
             side_signs: Optional shape ``(num_legs,)`` or broadcastable tensor.
+            home_positions: Optional shape ``(..., num_legs, 3)`` standing or
+                home pose. When provided, it overrides legacy
+                ``center_offsets`` and ``ground_heights`` handling.
         """
         phases = phases.to(device=self.device, dtype=self.dtype)
         step_vectors_body = step_vectors_body.to(device=self.device, dtype=self.dtype)
@@ -106,12 +120,6 @@ class QuadrupedGaitGenerator:
         side_signs = side_signs.to(device=phases.device, dtype=phases.dtype)
 
         step_heights_t = self._expand_param(step_heights, phases)
-        ground_heights_t = self._expand_param(ground_heights, phases)
-        if center_offsets is None:
-            home_x = self.home_foot_positions(side_signs)[..., 0]
-            center_offsets_t = torch.zeros_like(phases) + home_x
-        else:
-            center_offsets_t = self._expand_param(center_offsets, phases)
 
         phi = (phases + math.pi / 2.0) % (2.0 * math.pi)
         stance_mask = phi < math.pi
@@ -123,9 +131,21 @@ class QuadrupedGaitGenerator:
             step_heights_t * torch.sin(phi - math.pi),
         )
 
-        target_x = center_offsets_t + xy_displacement[..., 0]
-        target_y = self.geometry.l_coxa * side_signs + xy_displacement[..., 1]
-        target_z = ground_heights_t + z_lift
+        if home_positions is not None:
+            home_positions_t = home_positions.to(device=phases.device, dtype=phases.dtype)
+            target_x = home_positions_t[..., 0] + xy_displacement[..., 0]
+            target_y = home_positions_t[..., 1] + xy_displacement[..., 1]
+            target_z = home_positions_t[..., 2] + z_lift
+        else:
+            ground_heights_t = self._expand_param(ground_heights, phases)
+            if center_offsets is None:
+                home_x = self.home_foot_positions(side_signs)[..., 0]
+                center_offsets_t = torch.zeros_like(phases) + home_x
+            else:
+                center_offsets_t = self._expand_param(center_offsets, phases)
+            target_x = center_offsets_t + xy_displacement[..., 0]
+            target_y = self.geometry.l_coxa * side_signs + xy_displacement[..., 1]
+            target_z = ground_heights_t + z_lift
         return torch.stack((target_x, target_y, target_z), dim=-1)
 
     def joint_targets_from_phase(
@@ -136,6 +156,7 @@ class QuadrupedGaitGenerator:
         ground_heights: torch.Tensor | float,
         center_offsets: torch.Tensor | float | None = None,
         side_signs: torch.Tensor | None = None,
+        home_positions: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(joint_targets, foot_targets, valid_ik)`` for a gait phase."""
         if side_signs is None:
@@ -147,6 +168,7 @@ class QuadrupedGaitGenerator:
             ground_heights,
             center_offsets=center_offsets,
             side_signs=side_signs,
+            home_positions=home_positions,
         )
         joint_targets, valid_ik = self.solve_ik(foot_targets, side_signs)
         return joint_targets, foot_targets, valid_ik
@@ -161,7 +183,8 @@ class QuadrupedGaitGenerator:
 
         Returns:
             A tuple ``(joint_targets, valid_ik)``. ``joint_targets`` has shape
-            ``(..., num_legs, 3)`` in HAA/HFE/KFE order.
+            ``(..., num_legs, 3)`` in HAA/HFE/KFE order and remains in planner
+            space; asset-specific simulator direction mapping happens later.
         """
         foot_targets = foot_targets.to(device=self.device, dtype=self.dtype)
         if side_signs is None:
@@ -210,8 +233,8 @@ class QuadrupedGaitGenerator:
         theta3_relative = math.pi - beta
 
         d_theta1 = theta1
-        d_theta2 = theta2_absolute - self.geometry.femur_rest_angle_global
-        d_theta3 = theta3_relative - self.geometry.tibia_rest_angle_relative
+        d_theta2 = theta2_absolute - self.geometry.femur_zero_angle_global
+        d_theta3 = theta3_relative - self.geometry.tibia_zero_angle_relative
         joint_targets = torch.stack((d_theta1, d_theta2, d_theta3), dim=-1)
         return joint_targets, valid_ik
 
@@ -240,8 +263,8 @@ class QuadrupedGaitGenerator:
         side_signs = side_signs.to(device=joint_targets.device, dtype=joint_targets.dtype)
 
         theta1 = joint_targets[..., 0]
-        theta2 = joint_targets[..., 1] + self.geometry.femur_rest_angle_global
-        theta3 = joint_targets[..., 2] + self.geometry.tibia_rest_angle_relative
+        theta2 = joint_targets[..., 1] + self.geometry.femur_zero_angle_global
+        theta3 = joint_targets[..., 2] + self.geometry.tibia_zero_angle_relative
 
         c1 = torch.cos(theta1)
         s1 = torch.sin(theta1)

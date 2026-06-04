@@ -162,6 +162,9 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_LEFT",
                 "phase_offset_deg": 0.0,
                 "side": "left",
+                "haa_sign": +1.0,
+                "hfe_sign": +1.0,
+                "kfe_sign": -1.0,
             },
             "FR": {
                 "coxa": "HAA_FRONT_RIGHT",
@@ -169,6 +172,9 @@ class ActionsCfg:
                 "tibia": "KFE_FRONT_RIGHT",
                 "phase_offset_deg": 180.0,
                 "side": "right",
+                "haa_sign": +1.0,
+                "hfe_sign": -1.0,
+                "kfe_sign": -1.0,
             },
             "RL": {
                 "coxa": "HAA_REAR_LEFT",
@@ -176,6 +182,9 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_LEFT",
                 "phase_offset_deg": 180.0,
                 "side": "left",
+                "haa_sign": -1.0,
+                "hfe_sign": +1.0,
+                "kfe_sign": -1.0,
             },
             "RR": {
                 "coxa": "HAA_REAR_RIGHT",
@@ -183,6 +192,9 @@ class ActionsCfg:
                 "tibia": "KFE_REAR_RIGHT",
                 "phase_offset_deg": 0.0,
                 "side": "right",
+                "haa_sign": -1.0,
+                "hfe_sign": -1.0,
+                "kfe_sign": -1.0,
             },
         },
     )

@@ -14,6 +14,7 @@ parser.add_argument(
     type=str,
     nargs="+",
     default=[
+        "HAA_FRONT_LEFT", "HAA_FRONT_RIGHT", "HAA_REAR_LEFT", "HAA_REAR_RIGHT",
         "HFE_FRONT_LEFT",
         "HFE_FRONT_RIGHT",
         "HFE_REAR_LEFT",

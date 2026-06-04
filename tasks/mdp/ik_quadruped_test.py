@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -10,9 +12,26 @@ L_COXA = 120.05
 L_FEMUR = 260.0
 L_TIBIA = 300.0
 
-# 初始姿态绝对角 (保持与 ik_test.py 一致)
-FEMUR_REST_ANGLE_GLOBAL = np.deg2rad(-40.0)
-TIBIA_REST_ANGLE_RELATIVE = np.deg2rad(-100.0)
+# USD/FK 几何零位：用于 planner joint <-> geometric angle 映射。
+FEMUR_ZERO_ANGLE_GLOBAL = np.deg2rad(-150.0)
+TIBIA_ZERO_ANGLE_RELATIVE = np.deg2rad(15.0)
+
+# Mastiff sim/mechanical joint sign: q_sim = q_planner * SIGN。
+LEG_JOINT_SIGNS = {
+    "FL": np.array([+1.0, +1.0, -1.0]),
+    "FR": np.array([+1.0, -1.0, -1.0]),
+    "RL": np.array([-1.0, +1.0, -1.0]),
+    "RR": np.array([-1.0, -1.0, -1.0]),
+}
+
+# Standing pose is expressed in planner space, matching QuadrupedGaitAction.
+STANDING_HAA = np.deg2rad(0.0)
+STANDING_HFE = np.deg2rad(0.0)
+STANDING_KFE = np.deg2rad(40.0)
+USE_STANDING_HOME = True
+
+HEADLESS_OUTPUT_GIF = Path('/tmp/ik_quadruped_test.gif')
+HEADLESS_OUTPUT_PNG = Path('/tmp/ik_quadruped_test_first_frame.png')
 
 # 只用于四足可视化的固定身体几何。HAA 原点放在 body 四角附近。
 BODY_LENGTH = 520.0
@@ -62,18 +81,19 @@ def rot_x(theta):
 
 def forward_kinematics(theta1, theta2, theta3, side=1.0):
     """
-    正运动学：输入控制角 (相对于初始姿态的偏差)，输出单条腿局部坐标。
+    正运动学：输入 planner joint angle，输出单条腿局部坐标。
 
     side=+1 表示左腿，COXA 沿局部 +Y；
-    side=-1 表示右腿，COXA 沿局部 -Y，并镜像 HAA 旋转方向。
+    side=-1 表示右腿，COXA 沿局部 -Y。
+
+    注意：theta2/theta3 不是站姿 delta，而是经过 zero-angle 映射前的
+    planner joint angle；真正的几何绝对角由 ZERO_ANGLE 常量决定。
     """
     side = 1.0 if side >= 0.0 else -1.0
 
-    # 这里的输入 theta 是相对于 "Home Pose" 的 delta
-    # theta1 采用“左腿解”的符号约定，右腿在 FK 中做镜像。
-    t1 = side * theta1
-    t2 = theta2 + FEMUR_REST_ANGLE_GLOBAL
-    t3 = theta3 + TIBIA_REST_ANGLE_RELATIVE
+    t1 = theta1
+    t2 = theta2 + FEMUR_ZERO_ANGLE_GLOBAL
+    t3 = theta3 + TIBIA_ZERO_ANGLE_RELATIVE
 
     R_haa = rot_x(t1)
 
@@ -100,68 +120,84 @@ def forward_kinematics(theta1, theta2, theta3, side=1.0):
     return np.vstack([p0, p1, p2, p3])
 
 
+def planner_to_sim_joint_targets(theta1_planner, theta2_planner, theta3_planner, leg_name):
+    """把 planner 角按 Mastiff 的每腿 joint_sign 转为 sim/mechanical 角。"""
+    planner = np.array([theta1_planner, theta2_planner, theta3_planner])
+    return planner * LEG_JOINT_SIGNS[leg_name]
+
+
+def standing_planner_joint_targets():
+    """返回 standing pose 在 planner 空间下的 joint targets。"""
+    return np.array([STANDING_HAA, STANDING_HFE, STANDING_KFE])
+
+
+def nominal_home_foot_pos(side=1.0):
+    """返回用于 gait home reference 的足端位置。"""
+    if USE_STANDING_HOME:
+        standing_q = standing_planner_joint_targets()
+        return forward_kinematics(standing_q[0], standing_q[1], standing_q[2], side=side)[-1]
+    return forward_kinematics(0.0, 0.0, 0.0, side=side)[-1]
+
+
 # ==================== 2. 逆运动学 (Inverse Kinematics) ====================
 
 
 def solve_left_leg_ik(target_x, target_y, target_z):
     """
-    ik_test.py 中单条左腿的 IK 解。
+    单条左腿 IK。
 
     输入: 左腿局部目标点坐标 (x, y, z)
-    输出: 关节控制角 (d_theta1, d_theta2, d_theta3) -> 弧度
+    输出: planner joint angle (theta1, theta2, theta3) -> 弧度
     如果不可达，返回 None
     """
-    # --- 1. 求解 HAA (Theta 1) ---
     r_yz = np.hypot(target_y, target_z)
     if r_yz < L_COXA:
         return None
 
     phi_yz = np.arctan2(target_z, target_y)
-    theta1 = phi_yz + np.arccos(np.clip(L_COXA / r_yz, -1.0, 1.0))
+    delta = np.arccos(np.clip(L_COXA / r_yz, -1.0, 1.0))
 
-    # --- 2. 转换到 Femur-Tibia 平面 ---
-    c1, s1 = np.cos(theta1), np.sin(theta1)
+    theta1_a = phi_yz - delta
+    theta1_b = phi_yz + delta
+
+    h_a = -target_y * np.sin(theta1_a) + target_z * np.cos(theta1_a)
+    h_b = -target_y * np.sin(theta1_b) + target_z * np.cos(theta1_b)
+
+    theta1 = theta1_a if h_a < h_b else theta1_b
+    h = min(h_a, h_b)
     w = target_x
-    h = -target_y * s1 + target_z * c1
-    L_virtual = np.hypot(w, h)
+    l_virtual = np.hypot(w, h)
 
-    if L_virtual < 1e-9:
+    if l_virtual < 1e-9:
+        return None
+    if l_virtual > (L_FEMUR + L_TIBIA) or l_virtual < abs(L_FEMUR - L_TIBIA):
         return None
 
-    # --- 3. 检查可达性 ---
-    if L_virtual > (L_FEMUR + L_TIBIA) or L_virtual < abs(L_FEMUR - L_TIBIA):
-        return None
-
-    # --- 4. 余弦定理求解 J2, J3 ---
-    cos_beta = (L_FEMUR**2 + L_TIBIA**2 - L_virtual**2) / (2.0 * L_FEMUR * L_TIBIA)
+    cos_beta = (L_FEMUR**2 + L_TIBIA**2 - l_virtual**2) / (2.0 * L_FEMUR * L_TIBIA)
     cos_beta = np.clip(cos_beta, -1.0, 1.0)
     beta = np.arccos(cos_beta)
 
-    cos_alpha = (L_FEMUR**2 + L_virtual**2 - L_TIBIA**2) / (2.0 * L_FEMUR * L_virtual)
+    cos_alpha = (L_FEMUR**2 + l_virtual**2 - L_TIBIA**2) / (2.0 * L_FEMUR * l_virtual)
     cos_alpha = np.clip(cos_alpha, -1.0, 1.0)
     alpha = np.arccos(cos_alpha)
 
     gamma = np.arctan2(h, w)
-
-    # 计算物理绝对角度（四足狗常见的 "Knee Down" 解）
     theta2_absolute = gamma - alpha
     theta3_relative = np.pi - beta
 
-    # --- 5. 转换为控制量 (Delta) ---
-    d_theta1 = theta1
-    d_theta2 = theta2_absolute - FEMUR_REST_ANGLE_GLOBAL
-    d_theta3 = theta3_relative - TIBIA_REST_ANGLE_RELATIVE
+    q1 = theta1
+    q2 = theta2_absolute - FEMUR_ZERO_ANGLE_GLOBAL
+    q3 = theta3_relative - TIBIA_ZERO_ANGLE_RELATIVE
 
-    return d_theta1, d_theta2, d_theta3
+    return q1, q2, q3
 
 
 def solve_ik(target_x, target_y, target_z, side=1.0):
     """
     四足版本 IK。
 
-    左腿直接使用 ik_test.py 的 IK；
-    右腿先镜像到左腿局部坐标求解，再由 forward_kinematics(..., side=-1)
-    镜像回右腿几何。
+    左腿直接使用左腿 IK；
+    右腿只做 Y 方向镜像，保持与 quadruped_gait_generator.py 一致。
     """
     side = 1.0 if side >= 0.0 else -1.0
     return solve_left_leg_ik(target_x, side * target_y, target_z)
@@ -174,25 +210,23 @@ def generate_base_phases(segment_length, delta_length, height):
     """根据 segment_length 生成一个步态周期的相位序列。"""
     phase_zero_shift = np.pi / 2.0
 
-    # --- A. 支撑相 (直线) ---
     stance_length = delta_length
     num_stance = int(max(stance_length / segment_length, 2))
     phi_stance = np.linspace(0.0, np.pi, num_stance, endpoint=False)
 
-    # --- B. 摆动相 (半椭圆) ---
     swing_perimeter_approx = np.pi * np.sqrt((delta_length / 2.0) ** 2 + height**2) * 0.8
     num_swing = int(max(swing_perimeter_approx / segment_length, 5))
     phi_swing = np.linspace(np.pi, 2.0 * np.pi, num_swing, endpoint=False)
 
-    # 与 ik_test.py 一样：frame=0 落在支撑相中点
     base_phis = np.concatenate([phi_stance, phi_swing])
     return (base_phis + phase_zero_shift) % (2.0 * np.pi)
 
 
-def target_from_phase(phi, side, delta_length, height, ground_z, alpha_deg):
+def target_from_phase(phi, side, delta_length, height, ground_z, alpha_deg, home_foot_pos=None):
     """从相位生成单条腿局部目标点。"""
     alpha_rad = np.radians(alpha_deg)
-    home_foot_pos = forward_kinematics(0.0, 0.0, 0.0, side=side)[-1]
+    if home_foot_pos is None:
+        home_foot_pos = nominal_home_foot_pos(side=side)
     gait_dir = np.array([np.cos(alpha_rad), np.sin(alpha_rad)])
 
     x_loc = (delta_length / 2.0) * np.cos(phi)
@@ -204,17 +238,18 @@ def target_from_phase(phi, side, delta_length, height, ground_z, alpha_deg):
     x_rot = x_loc * gait_dir[0]
     y_rot = x_loc * gait_dir[1]
 
-    X = home_foot_pos[0] + x_rot
-    Y = home_foot_pos[1] + y_rot
-    Z = ground_z + z_loc
-    return np.array([X, Y, Z])
+    x = home_foot_pos[0] + x_rot
+    y = home_foot_pos[1] + y_rot
+    z = ground_z + z_loc if home_foot_pos is None else home_foot_pos[2] + z_loc
+    return np.array([x, y, z])
 
 
 def generate_discrete_path(segment_length, delta_length, height, ground_z, alpha_deg, side, phase_offset_deg):
     """生成单条腿一个步态周期的局部足端轨迹。"""
     phase_offset = np.radians(phase_offset_deg)
     phases = (generate_base_phases(segment_length, delta_length, height) + phase_offset) % (2.0 * np.pi)
-    points = [target_from_phase(phi, side, delta_length, height, ground_z, alpha_deg) for phi in phases]
+    home_foot_pos = nominal_home_foot_pos(side=side)
+    points = [target_from_phase(phi, side, delta_length, height, ground_z, alpha_deg, home_foot_pos=home_foot_pos) for phi in phases]
     return np.array(points)
 
 
@@ -305,15 +340,31 @@ def add_ground_plane(ax, x_lim, y_lim, ground_z):
 
 
 def run_animation():
-    # --- 参数设置 ---
     SEGMENT_LEN = 3.0
     TRAJ_DELTA = 200.0
     TRAJ_HEIGHT = 60.0
-    TRAJ_GROUND = forward_kinematics(0.0, 0.0, 0.0, side=1.0)[-1, 2]
+    zero_home = forward_kinematics(0.0, 0.0, 0.0, side=1.0)[-1]
+    standing_home = nominal_home_foot_pos(side=1.0)
+    traj_ground = standing_home[2] if USE_STANDING_HOME else zero_home[2]
     TRAJ_ALPHA = 0.0
 
-    # 1. 生成四条腿轨迹点
-    leg_paths = build_leg_paths(SEGMENT_LEN, TRAJ_DELTA, TRAJ_HEIGHT, TRAJ_GROUND, TRAJ_ALPHA)
+    print('Zero home foot local:', np.round(zero_home, 3))
+    print('Standing planner joint targets:', np.round(np.degrees(standing_planner_joint_targets()), 3))
+    print('Standing home foot local:', np.round(standing_home, 3))
+    for leg_name, leg_cfg in LEG_CONFIGS.items():
+        standing_sim = np.degrees(planner_to_sim_joint_targets(*standing_planner_joint_targets(), leg_name))
+        ik_roundtrip = solve_ik(standing_home[0], standing_home[1], standing_home[2], side=leg_cfg['side'])
+        if ik_roundtrip is None:
+            print(f'IK roundtrip planner targets {leg_name}: unavailable')
+            continue
+        ik_roundtrip_sim = np.degrees(planner_to_sim_joint_targets(*ik_roundtrip, leg_name))
+        print(f'Standing sim joint targets {leg_name}:', np.round(standing_sim, 3))
+        print(f'IK roundtrip planner targets {leg_name}:', np.round(np.degrees(np.array(ik_roundtrip)), 3))
+        print(f'IK roundtrip sim targets {leg_name}:', np.round(ik_roundtrip_sim, 3))
+    print('Leg joint signs:', {name: tuple(signs.tolist()) for name, signs in LEG_JOINT_SIGNS.items()})
+    print('Using standing home:', USE_STANDING_HOME)
+
+    leg_paths = build_leg_paths(SEGMENT_LEN, TRAJ_DELTA, TRAJ_HEIGHT, traj_ground, TRAJ_ALPHA)
     frame_count = len(next(iter(leg_paths.values())))
     print(f"Generated {frame_count} frames for four-leg IK animation")
 
@@ -324,7 +375,6 @@ def run_animation():
     if any(unreachable_counts.values()):
         print(f"IK warning, unreachable frames: {unreachable_counts}")
 
-    # 2. 准备绘图
     fig = plt.figure(figsize=(11, 8))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -336,7 +386,8 @@ def run_animation():
         color = leg_cfg["color"]
         path_points = leg_paths[leg_name]
 
-        initial_positions = leg_cfg["hip"] + forward_kinematics(0.0, 0.0, 0.0, side=leg_cfg["side"])
+        standing_q = standing_planner_joint_targets()
+        initial_positions = leg_cfg["hip"] + forward_kinematics(standing_q[0], standing_q[1], standing_q[2], side=leg_cfg["side"])
         leg_line, = ax.plot(
             initial_positions[:, 0],
             initial_positions[:, 1],
@@ -374,10 +425,11 @@ def run_animation():
     vis_chunks = [np.array([leg_cfg["hip"] for leg_cfg in LEG_CONFIGS.values()])]
     for leg_name, leg_cfg in LEG_CONFIGS.items():
         vis_chunks.append(leg_paths[leg_name])
-        vis_chunks.append(leg_cfg["hip"] + forward_kinematics(0.0, 0.0, 0.0, side=leg_cfg["side"]))
+        standing_q = standing_planner_joint_targets()
+        vis_chunks.append(leg_cfg["hip"] + forward_kinematics(standing_q[0], standing_q[1], standing_q[2], side=leg_cfg["side"]))
     vis_points = np.vstack(vis_chunks)
     x_lim, y_lim, z_lim = set_equal_axes(ax, vis_points)
-    add_ground_plane(ax, x_lim, y_lim, TRAJ_GROUND)
+    add_ground_plane(ax, x_lim, y_lim, traj_ground)
 
     ax.set_xlabel("X (mm, forward)")
     ax.set_ylabel("Y (mm, left)")
@@ -386,7 +438,6 @@ def run_animation():
     ax.legend(loc="upper left")
     ax.view_init(elev=24, azim=-48)
 
-    # 3. 动画更新函数
     def update(frame):
         for leg_name, leg_cfg in LEG_CONFIGS.items():
             target_world = leg_paths[leg_name][frame % frame_count]
@@ -412,12 +463,25 @@ def run_animation():
 
         return artists
 
-    # 4. 创建动画
     ani = animation.FuncAnimation(fig, update, frames=frame_count, interval=50, blit=False)
 
-    # 保留变量引用，避免某些后端提前回收 animation 对象。
-    _ = ani
-    plt.show()
+    backend = plt.get_backend().lower()
+    is_headless = 'agg' in backend
+    if is_headless:
+        print(f'Non-interactive backend detected: {plt.get_backend()}')
+        try:
+            writer = animation.PillowWriter(fps=20)
+            ani.save(HEADLESS_OUTPUT_GIF, writer=writer)
+            print(f'Saved animation to {HEADLESS_OUTPUT_GIF}')
+        except Exception as exc:
+            print(f'GIF export failed: {exc}')
+            update(0)
+            fig.savefig(HEADLESS_OUTPUT_PNG, dpi=160, bbox_inches='tight')
+            print(f'Saved first frame to {HEADLESS_OUTPUT_PNG}')
+        finally:
+            plt.close(fig)
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
