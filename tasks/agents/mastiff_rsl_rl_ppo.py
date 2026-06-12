@@ -83,3 +83,9 @@ class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=0.5,     
     )
+
+
+
+@configclass
+class LynxFlatPPORunnerCfg(MastiffFlatPPORunnerCfg):
+    experiment_name = "lynx-flat-v0"

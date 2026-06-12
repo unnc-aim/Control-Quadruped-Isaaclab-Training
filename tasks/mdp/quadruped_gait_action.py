@@ -140,6 +140,7 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_femur_indices = torch.tensor([leg["femur_idx"] for leg in self.legs], device=self.device)
             self._leg_tibia_indices = torch.tensor([leg["tibia_idx"] for leg in self.legs], device=self.device)
             self._standing_joint_targets = self._resolve_standing_joint_targets()
+            self._warn_if_degenerate_joint_limits()
             if self._standing_joint_targets is not None:
                 self._nominal_home_positions = self._generator.nominal_standing_foot_positions(
                     self._standing_joint_targets,
@@ -370,6 +371,48 @@ class QuadrupedGaitAction(ActionTerm):
             dtype=torch.float32,
         )
         return standing_joint_targets.unsqueeze(0).repeat(self._leg_count, 1)
+
+    def _warn_if_degenerate_joint_limits(self) -> None:
+        limits = self._get_joint_limits_tensor()
+        if limits is None or self._leg_count == 0:
+            return
+
+        lower_all, upper_all = limits
+        lower = torch.stack(
+            (
+                lower_all[:, self._leg_coxa_indices],
+                lower_all[:, self._leg_femur_indices],
+                lower_all[:, self._leg_tibia_indices],
+            ),
+            dim=-1,
+        )
+        upper = torch.stack(
+            (
+                upper_all[:, self._leg_coxa_indices],
+                upper_all[:, self._leg_femur_indices],
+                upper_all[:, self._leg_tibia_indices],
+            ),
+            dim=-1,
+        )
+        spans = upper - lower
+        collapsed = spans[0] <= 1.0e-5
+        if not bool(collapsed.any()):
+            return
+
+        details: list[str] = []
+        for leg_idx, leg in enumerate(self.legs):
+            for axis_idx, joint_idx in enumerate((leg["coxa_idx"], leg["femur_idx"], leg["tibia_idx"])):
+                if bool(collapsed[leg_idx, axis_idx]):
+                    joint_name = self._asset.joint_names[joint_idx]
+                    low = lower[0, leg_idx, axis_idx].item()
+                    high = upper[0, leg_idx, axis_idx].item()
+                    details.append(f"{joint_name}=[{low:+.5f}, {high:+.5f}]")
+
+        print(
+            "[QuadrupedGaitAction] Warning: some controlled joints have near-zero position limits; "
+            "targets may be clipped before they reach the simulator: "
+            + ", ".join(details)
+        )
 
     def _clip_leg_joint_targets(self, joint_targets: torch.Tensor) -> torch.Tensor:
         limits = self._get_joint_limits_tensor()
@@ -611,7 +654,7 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     debug_env_index: int = 0
     clip_joint_targets: bool = True
     lock_base_in_air: bool = False
-    lock_base_height: float | None = None
+    lock_base_height: float | None = 2
 
     legs_config: dict = {
         "FL": {

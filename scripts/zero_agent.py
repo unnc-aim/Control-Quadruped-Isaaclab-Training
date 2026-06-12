@@ -75,8 +75,24 @@ class DiagonalLegTrajectoryPlotter:
         self.playback_speed = max(float(initial_speed), 0.1)
         self._leg_colors = {"FL": "tab:blue", "RR": "tab:orange", "FR": "tab:green", "RL": "tab:red"}
         self._history = {leg: deque(maxlen=max(int(history_length), 10)) for leg in self._leg_colors}
-        self._foot_body_ids = self._resolve_leg_body_ids("Foot")
-        self._haa_body_ids = self._resolve_leg_body_ids("Hip")
+        self._foot_body_ids = self._resolve_leg_body_ids_by_candidates(
+            {
+                "FL": ("Foot_2", "Foot", "foot"),
+                "FR": ("Calf_2", "Foot_1", "Foot", "foot"),
+                "RL": ("Calf", "Foot_3", "Foot", "foot"),
+                "RR": ("Calf_3", "Foot", "foot"),
+            },
+            fallback_keywords=("Foot", "foot"),
+        )
+        self._haa_body_ids = self._resolve_leg_body_ids_by_candidates(
+            {
+                "FL": ("Hip", "hip"),
+                "FR": ("Hip_3", "hip_3", "hip"),
+                "RL": ("Hip_2", "hip_2", "hip"),
+                "RR": ("Hip_1", "hip_1", "hip"),
+            },
+            fallback_keywords=("Hip", "hip"),
+        )
 
         self._plt.ion()
         self._fig, (self._ax_fl_rr, self._ax_fr_rl, self._ax_all) = self._plt.subplots(1, 3, figsize=(16, 5))
@@ -127,12 +143,35 @@ class DiagonalLegTrajectoryPlotter:
         self._fig.canvas.draw_idle()
         self._fig.canvas.flush_events()
 
-    def _resolve_leg_body_ids(self, body_name_keyword: str) -> dict[str, int]:
+    def _resolve_leg_body_ids_by_candidates(
+        self,
+        per_leg_candidates: dict[str, tuple[str, ...]],
+        fallback_keywords: tuple[str, ...],
+    ) -> dict[str, int]:
         body_names = list(self._robot.data.body_names)
-        body_candidates = [idx for idx, name in enumerate(body_names) if body_name_keyword in name]
+        body_name_to_idx = {name: idx for idx, name in enumerate(body_names)}
+        resolved: dict[str, int] = {}
+        for leg, candidates in per_leg_candidates.items():
+            for candidate in candidates:
+                if candidate in body_name_to_idx:
+                    resolved[leg] = body_name_to_idx[candidate]
+                    break
+        if len(resolved) == 4:
+            return resolved
+        return self._resolve_leg_body_ids(fallback_keywords)
+
+    def _resolve_leg_body_ids(self, body_name_keywords: tuple[str, ...] | str) -> dict[str, int]:
+        body_names = list(self._robot.data.body_names)
+        if isinstance(body_name_keywords, str):
+            body_name_keywords = (body_name_keywords,)
+        body_candidates = [
+            idx
+            for idx, name in enumerate(body_names)
+            if any(keyword in name for keyword in body_name_keywords)
+        ]
         if len(body_candidates) != 4:
             raise RuntimeError(
-                f"Expected 4 '{body_name_keyword}' bodies, but found {len(body_candidates)}: "
+                f"Expected 4 bodies matching {body_name_keywords}, but found {len(body_candidates)}: "
                 f"{[body_names[idx] for idx in body_candidates]}"
             )
 

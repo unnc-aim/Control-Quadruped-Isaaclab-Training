@@ -130,6 +130,12 @@ class ActionsCfg:
 
     cpg = QuadrupedGaitActionCfg(
         asset_name="robot",
+        # Keep explicit Mastiff geometry now that generator defaults follow Lynxc.
+        l_coxa=0.12005,
+        l_femur=0.260,
+        l_tibia=0.300,
+        body_length=0.520,
+        body_width=0.180,
         joint_names=[".*"],
         step_height=0.05,
         step_length=0.06,

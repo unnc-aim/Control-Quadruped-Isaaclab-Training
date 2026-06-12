@@ -20,16 +20,23 @@ DEFAULT_TROT_PHASE_OFFSETS = {
     "RR": 0.0,
 }
 
+# Default geometry follows the Lynxc asset used in this repository.
+DEFAULT_LYNXC_L_COXA = 0.075
+DEFAULT_LYNXC_L_FEMUR = math.sqrt(0.0602**2 + 0.22**2)
+DEFAULT_LYNXC_L_TIBIA = math.sqrt(0.303431**2 + 0.0455**2 + 0.03**2)
+DEFAULT_LYNXC_FEMUR_ZERO_ANGLE_GLOBAL = math.radians(90.0)
+DEFAULT_LYNXC_TIBIA_ZERO_ANGLE_RELATIVE = math.radians(180.0)
+
 
 @dataclass(frozen=True)
 class QuadrupedGeometry:
-    """Kinematic constants for the Mastiff leg model, in meters and radians."""
+    """Kinematic constants for the quadruped leg model, in meters and radians."""
 
-    l_coxa: float = 0.12005
-    l_femur: float = 0.260
-    l_tibia: float = 0.300
-    femur_zero_angle_global: float = math.radians(-150.0)
-    tibia_zero_angle_relative: float = math.radians(15.0)
+    l_coxa: float = DEFAULT_LYNXC_L_COXA
+    l_femur: float = DEFAULT_LYNXC_L_FEMUR
+    l_tibia: float = DEFAULT_LYNXC_L_TIBIA
+    femur_zero_angle_global: float = DEFAULT_LYNXC_FEMUR_ZERO_ANGLE_GLOBAL
+    tibia_zero_angle_relative: float = DEFAULT_LYNXC_TIBIA_ZERO_ANGLE_RELATIVE
 
 
 class QuadrupedGaitGenerator:

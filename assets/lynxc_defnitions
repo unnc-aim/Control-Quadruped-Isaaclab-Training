@@ -1,0 +1,45 @@
+
+Coordinates:
+
+front: X axis positive direction
+left: y axis positive direction
+up: z axis positive direction
+
+---
+
+Joints:
+
+xx0: body to hip
+xx1: hip to thigh
+xx2: thigh to calf
+xx: calf to foot
+
+xx0 位于xy平面 FL RL 与y轴正方向夹角 = 0 FR RR 与y轴正方向夹角180
+xx1 在xx0位于0位的情况下向z轴正方向（均向上）
+xx2 在0和1位于0位的情况下向z轴负方向（均向下）
+
+---
+
+Legs: 
+
+FL: hip thigh_2 calf_1 *foot_2
+
+FR: hip_3 thigh *calf_2 foot_1
+
+RL: hip_2 thigh_3 *calf foot_3
+
+RR: hip_1 thigh_1 *calf_3 foot
+
+---
+
+Positive Direction:
+
+L侧和R侧所有关节正方向相反
+
+L侧 0 正方向向下
+1 正方向逆时针方向
+2 正方向顺时针方向
+
+R侧 0 正方向向上
+1 正方向顺时针方向
+2 正方向逆时针方向
