@@ -88,6 +88,7 @@ LYNXC_CFG = ArticulationCfg(
         pos=(0.0, 0.0, 0.3),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
+        rot=(0.7071068, 0.0, 0.7071068, 0.0)
     ),
     actuators={
         "all_joints": ImplicitActuatorCfg(

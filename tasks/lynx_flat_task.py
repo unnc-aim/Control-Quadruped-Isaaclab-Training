@@ -162,7 +162,7 @@ class ActionsCfg:
         step_frequency_residual_scale=0.2,
         turn_rate_residual_scale=0.1,
         debug_print_enabled=False,
-        lock_base_in_air=True,
+        lock_base_in_air=False,
         femur_zero_angle_global_deg=90.0,
         tibia_zero_angle_relative_deg=180.0,
         standing_haa_deg=LYNX_STANDING_HAA_DEG,

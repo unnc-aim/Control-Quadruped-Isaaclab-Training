@@ -26,10 +26,10 @@ Lynxc_CONFIG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 1.0),
+        pos=(0.0, 0.0, 0.8),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
-        rot=(0.7071068, 0.0, -0.7071068, 0.0)
+        rot=(0.7071068, 0.0, 0.7071068, 0.0)
     ),
     actuators={
         "all_joints": ImplicitActuatorCfg(
