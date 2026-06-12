@@ -26,7 +26,7 @@ Lynxc_CONFIG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.8),
+        pos=(0.0, 0.0, 0.4),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
         rot=(0.7071068, 0.0, 0.7071068, 0.0)

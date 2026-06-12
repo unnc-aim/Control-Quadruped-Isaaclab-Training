@@ -39,6 +39,7 @@ class QuadrupedGaitAction(ActionTerm):
         self._env = env
         self._dt = env.physics_dt
         self._step_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+        self._startup_standing_blend_duration_s = max(float(cfg.startup_standing_blend_duration_s), 0.0)
 
         self._lock_base_in_air = bool(cfg.lock_base_in_air)
         self._locked_root_pose = None
@@ -146,8 +147,12 @@ class QuadrupedGaitAction(ActionTerm):
                     self._standing_joint_targets,
                     self._leg_side_signs,
                 )
+                self._standing_sim_joint_targets = self._standing_joint_targets * self._leg_joint_signs
             else:
                 self._nominal_home_positions = None
+                self._standing_sim_joint_targets = torch.zeros(self._leg_count, 3, device=self.device, dtype=torch.float32)
+            self._startup_blend_start_targets = torch.zeros(self.num_envs, self._leg_count, 3, device=self.device, dtype=torch.float32)
+            self._startup_blend_elapsed = torch.full((self.num_envs,), self._startup_standing_blend_duration_s, device=self.device, dtype=torch.float32)
         else:
             self._leg_phases = torch.zeros(self.num_envs, 0, device=self.device, dtype=torch.float32)
             self._initial_leg_phases = torch.zeros(0, device=self.device, dtype=torch.float32)
@@ -159,6 +164,9 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_tibia_indices = torch.zeros(0, device=self.device, dtype=torch.long)
             self._standing_joint_targets = None
             self._nominal_home_positions = None
+            self._standing_sim_joint_targets = torch.zeros(0, 3, device=self.device, dtype=torch.float32)
+            self._startup_blend_start_targets = torch.zeros(self.num_envs, 0, 3, device=self.device, dtype=torch.float32)
+            self._startup_blend_elapsed = torch.full((self.num_envs,), self._startup_standing_blend_duration_s, device=self.device, dtype=torch.float32)
 
         self._rl_action_dim = self._leg_count * 4
         self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
@@ -284,6 +292,8 @@ class QuadrupedGaitAction(ActionTerm):
         planner_joint_targets = torch.where(valid_ik.unsqueeze(-1), planner_joint_targets, default_joint_targets)
         sim_joint_targets = planner_joint_targets * self._leg_joint_signs.unsqueeze(0)
 
+        sim_joint_targets = self._apply_startup_standing_blend(sim_joint_targets)
+
         if self.cfg.clip_joint_targets:
             sim_joint_targets = self._clip_leg_joint_targets(sim_joint_targets)
 
@@ -315,6 +325,33 @@ class QuadrupedGaitAction(ActionTerm):
         self._turn_rate_residual[env_ids] = 0.0
         if self._leg_count > 0:
             self._leg_phases[env_ids] = self._initial_leg_phases
+            joint_source = getattr(self._asset.data, "joint_pos", None)
+            if not isinstance(joint_source, torch.Tensor) or joint_source.shape[0] != self.num_envs:
+                joint_source = self._asset.data.default_joint_pos
+            self._startup_blend_start_targets[env_ids, :, 0] = joint_source[env_ids][:, self._leg_coxa_indices]
+            self._startup_blend_start_targets[env_ids, :, 1] = joint_source[env_ids][:, self._leg_femur_indices]
+            self._startup_blend_start_targets[env_ids, :, 2] = joint_source[env_ids][:, self._leg_tibia_indices]
+            self._startup_blend_elapsed[env_ids] = 0.0 if self._startup_standing_blend_duration_s > 0.0 else self._startup_standing_blend_duration_s
+
+    def _apply_startup_standing_blend(self, sim_joint_targets: torch.Tensor) -> torch.Tensor:
+        if self._leg_count == 0 or self._startup_standing_blend_duration_s <= 0.0:
+            return sim_joint_targets
+
+        blend_mask = self._startup_blend_elapsed < self._startup_standing_blend_duration_s
+        if not bool(blend_mask.any()):
+            return sim_joint_targets
+
+        next_elapsed = torch.clamp(self._startup_blend_elapsed + self._dt, max=self._startup_standing_blend_duration_s)
+        blend_alpha = torch.clamp(next_elapsed / self._startup_standing_blend_duration_s, min=0.0, max=1.0)
+        standing_targets = self._standing_sim_joint_targets.unsqueeze(0).expand(self.num_envs, -1, -1)
+        blended_targets = torch.lerp(
+            self._startup_blend_start_targets,
+            standing_targets,
+            blend_alpha.view(self.num_envs, 1, 1),
+        )
+        sim_joint_targets = torch.where(blend_mask.view(self.num_envs, 1, 1), blended_targets, sim_joint_targets)
+        self._startup_blend_elapsed = torch.where(blend_mask, next_elapsed, self._startup_blend_elapsed)
+        return sim_joint_targets
 
     def _get_command(self) -> torch.Tensor:
         if hasattr(self._env, "command_manager"):
@@ -655,6 +692,7 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     clip_joint_targets: bool = True
     lock_base_in_air: bool = False
     lock_base_height: float | None = 2
+    startup_standing_blend_duration_s: float = 0.0
 
     legs_config: dict = {
         "FL": {

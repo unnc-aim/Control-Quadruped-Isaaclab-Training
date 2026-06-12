@@ -30,7 +30,7 @@ sys.path.insert(0, str(_PROJECT_PATH))
 from assets.Lynxc_CFG import Lynxc_CONFIG as _ROBOT_CONFIG
 
 DESIRED_BASE_HEIGHT_M = float(_ROBOT_CONFIG.init_state.pos[2])
-CPG_GROUND_HEIGHT_M = -0.25
+CPG_GROUND_HEIGHT_M = -0.30
 USE_ZERO_POSE_STANDING_TARGET = False
 LYNX_L_COXA_M = 0.075
 LYNX_L_FEMUR_M = math.sqrt(0.0602**2 + 0.22**2)
@@ -62,10 +62,10 @@ def _resolve_lynx_standing_pose_deg() -> tuple[float, float, float]:
     )
     foot_targets = torch.tensor(
         [
-            [0.020, +LYNX_L_COXA_M, -0.245],
-            [0.020, -LYNX_L_COXA_M, -0.245],
-            [0.020, +LYNX_L_COXA_M, -0.245],
-            [0.020, -LYNX_L_COXA_M, -0.245],
+            [0.020, +LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
+            [0.020, -LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
+            [0.020, +LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
+            [0.020, -LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
         ],
         dtype=torch.float64,
     )
@@ -163,6 +163,7 @@ class ActionsCfg:
         turn_rate_residual_scale=0.1,
         debug_print_enabled=False,
         lock_base_in_air=False,
+        startup_standing_blend_duration_s=0.35,
         femur_zero_angle_global_deg=90.0,
         tibia_zero_angle_relative_deg=180.0,
         standing_haa_deg=LYNX_STANDING_HAA_DEG,
@@ -259,7 +260,7 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
             "velocity_range": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),
