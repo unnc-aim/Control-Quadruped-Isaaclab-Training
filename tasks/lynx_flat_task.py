@@ -31,7 +31,7 @@ from assets.Lynxc_CFG import Lynxc_CONFIG as _ROBOT_CONFIG
 
 DESIRED_BASE_HEIGHT_M = float(_ROBOT_CONFIG.init_state.pos[2])
 CPG_GROUND_HEIGHT_M = -0.25
-USE_ZERO_POSE_STANDING_TARGET = True
+USE_ZERO_POSE_STANDING_TARGET = False
 LYNX_L_COXA_M = 0.075
 LYNX_L_FEMUR_M = math.sqrt(0.0602**2 + 0.22**2)
 LYNX_L_TIBIA_M = math.sqrt(0.303431**2 + 0.0455**2 + 0.03**2)
@@ -122,14 +122,10 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=False,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0, 0.0),
-            lin_vel_y=(0, 0.0),
-            ang_vel_z=(0.0, 0.0),
-            heading=(0, 0.0)
-            # lin_vel_x=(0.30, 0.60),
-            # lin_vel_y=(-0.20, 0.20),
-            # ang_vel_z=(-0.50, 0.50),
-            # heading=(-math.pi / 2.0, math.pi / 2.0),
+            lin_vel_x=(0.15, 0.30),
+            lin_vel_y=(-0.08, 0.08),
+            ang_vel_z=(-0.25, 0.25),
+            heading=(-math.pi / 4.0, math.pi / 4.0),
         ),
     )
 

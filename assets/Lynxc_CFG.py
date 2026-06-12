@@ -26,7 +26,7 @@ Lynxc_CONFIG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 2.0),
+        pos=(0.0, 0.0, 1.0),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
         rot=(0.7071068, 0.0, -0.7071068, 0.0)
@@ -34,9 +34,9 @@ Lynxc_CONFIG = ArticulationCfg(
     actuators={
         "all_joints": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            effort_limit=4000.0,
-            velocity_limit_sim=2000.94,
-            stiffness=1e6,
+            effort_limit=3000.0,
+            velocity_limit_sim=200.0,
+            stiffness=1e5,
             damping=200.0,
         ),
     },

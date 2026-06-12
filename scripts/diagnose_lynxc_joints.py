@@ -92,9 +92,9 @@ LYNXC_CFG = ArticulationCfg(
     actuators={
         "all_joints": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            effort_limit=4000.0,
+            effort_limit=2000.0,
             velocity_limit=2000.94,
-            stiffness=1e6,
+            stiffness=1e5,
             damping=200.0,
         ),
     },
@@ -162,23 +162,23 @@ def step_with_targets(
         robot.update(sim_dt)
 
 
-def step_with_direct_joint_state(
-    sim: SimulationContext,
-    robot: Articulation,
-    joint_pos: torch.Tensor,
-    joint_vel: torch.Tensor,
-    locked_root_pose: torch.Tensor,
-    locked_root_vel: torch.Tensor,
-    num_steps: int,
-) -> None:
-    sim_dt = sim.get_physics_dt()
-    for _ in range(num_steps):
-        robot.write_root_pose_to_sim(locked_root_pose)
-        robot.write_root_velocity_to_sim(locked_root_vel)
-        robot.write_joint_state_to_sim(joint_pos, joint_vel)
-        robot.write_data_to_sim()
-        sim.step()
-        robot.update(sim_dt)
+# def step_with_direct_joint_state(
+#     sim: SimulationContext,
+#     robot: Articulation,
+#     joint_pos: torch.Tensor,
+#     joint_vel: torch.Tensor,
+#     locked_root_pose: torch.Tensor,
+#     locked_root_vel: torch.Tensor,
+#     num_steps: int,
+# ) -> None:
+#     sim_dt = sim.get_physics_dt()
+#     for _ in range(num_steps):
+#         robot.write_root_pose_to_sim(locked_root_pose)
+#         robot.write_root_velocity_to_sim(locked_root_vel)
+#         robot.write_joint_state_to_sim(joint_pos, joint_vel)
+#         robot.write_data_to_sim()
+#         sim.step()
+#         robot.update(sim_dt)
 
 
 def step_with_effort_targets(
@@ -340,15 +340,15 @@ def run_diagnostic(sim: SimulationContext, robot: Articulation, origins: torch.T
             if leg_name in LEG_BODY_NAMES:
                 print_leg_link_snapshot(robot, leg_name, body_ids)
 
-            direct_target = zero_joint_pos.clone()
-            direct_target[:, joint_id] = angle
-            direct_velocity = torch.zeros_like(direct_target)
-            step_with_direct_joint_state(sim, robot, direct_target, direct_velocity, locked_root_pose, locked_root_vel, 2)
-            print(f"[LynxcJointDiag] direct-state write applied for {joint_name}")
-            print_joint_snapshot(robot, joint_name, joint_id, angle)
-            print_joint_group_snapshot(robot)
-            if leg_name in LEG_BODY_NAMES:
-                print_leg_link_snapshot(robot, leg_name, body_ids)
+            # direct_target = zero_joint_pos.clone()
+            # direct_target[:, joint_id] = angle
+            # direct_velocity = torch.zeros_like(direct_target)
+            # step_with_direct_joint_state(sim, robot, direct_target, direct_velocity, locked_root_pose, locked_root_vel, 2)
+            # print(f"[LynxcJointDiag] direct-state write applied for {joint_name}")
+            # print_joint_snapshot(robot, joint_name, joint_id, angle)
+            # print_joint_group_snapshot(robot)
+            # if leg_name in LEG_BODY_NAMES:
+            #     print_leg_link_snapshot(robot, leg_name, body_ids)
 
             step_with_targets(sim, robot, zero_target, locked_root_pose, locked_root_vel, args_cli.pause_steps)
             if not simulation_app.is_running():
