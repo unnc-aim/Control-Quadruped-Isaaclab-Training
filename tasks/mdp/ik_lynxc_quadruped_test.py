@@ -123,9 +123,9 @@ QuadrupedGaitAction = _action_module.QuadrupedGaitAction
 QuadrupedGaitActionCfg = _action_module.QuadrupedGaitActionCfg
 
 MM_PER_M = 1000.0
-L_COXA_M = 0.1
-L_FEMUR_M = 0.275
-L_TIBIA_M = 0.350
+L_COXA_M = 0.075
+L_FEMUR_M = math.sqrt(0.0602**2 + 0.22**2)
+L_TIBIA_M = math.sqrt(0.303431**2 + 0.0455**2 + 0.03**2)
 
 LEG_ORDER = ("FL", "FR", "RL", "RR")
 LEG_CONFIGS = {
@@ -141,6 +141,10 @@ JOINT_NAME_ORDER = [
     "rr0", "rr1", "rr2",
 ]
 JOINT0_SLIDER_LEGS = ("FL", "FR", "RL", "RR")
+GAIT_TYPES = ("trot", "walk")
+GAIT_LINE_STYLES = {"trot": "-", "walk": "--"}
+GAIT_MARKERS = {"trot": "o", "walk": "^"}
+GAIT_ALPHAS = {"trot": 0.95, "walk": 0.55}
 HEADLESS_OUTPUT_PNG = Path("ik_lynxc_quadruped_preview.png")
 COMMAND = np.array([0.45, 0.0, 0.0], dtype=np.float64)
 DT = 1.0 / 60.0
@@ -160,6 +164,7 @@ class LynxcGaitPlannerAdapter:
     _resolve_zero_angle_deg = QuadrupedGaitAction._resolve_zero_angle_deg
     _resolve_standing_joint_targets = QuadrupedGaitAction._resolve_standing_joint_targets
     _compute_turn_step = QuadrupedGaitAction._compute_turn_step
+    _phase_offset_from_config = QuadrupedGaitAction._phase_offset_from_config
 
     def __init__(self, cfg: QuadrupedGaitActionCfg, command_xyz: np.ndarray):
         self.cfg = cfg
@@ -207,7 +212,7 @@ class LynxcGaitPlannerAdapter:
             f_idx = joint_name_to_idx[leg_conf["femur"]]
             t_idx = joint_name_to_idx[leg_conf["tibia"]]
             side_sign = 1.0 if str(leg_conf.get("side", "left")).lower() == "left" else -1.0
-            phase_offset = math.radians(float(leg_conf.get("phase_offset_deg", 0.0)))
+            phase_offset = self._phase_offset_from_config(leg_name, leg_conf)
             hip_xy = tuple(float(v) for v in leg_conf.get("hip_xy", (0.0, side_sign * 0.075)))
             joint_signs = (
                 float(leg_conf.get("haa_sign", 1.0)),
@@ -238,6 +243,8 @@ class LynxcGaitPlannerAdapter:
             leg_order=tuple(leg_names),
             side_signs=leg_side_signs,
             phase_offsets=leg_phase_offsets,
+            knee_direction_signs=[-1.0 if name.upper().startswith("F") else 1.0 for name in leg_names],
+            gait_type=cfg.gait_type,
             device=self.device,
             dtype=torch.float64,
         )
@@ -249,7 +256,7 @@ class LynxcGaitPlannerAdapter:
         self._leg_coxa_indices = torch.tensor([leg["coxa_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
         self._leg_femur_indices = torch.tensor([leg["femur_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
         self._leg_tibia_indices = torch.tensor([leg["tibia_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
-        self._standing_joint_targets = self._resolve_standing_joint_targets().to(dtype=torch.float64)
+        self._standing_joint_targets = self._resolve_inner_knee_standing_joint_targets()
         self._nominal_home_positions = self._generator.nominal_standing_foot_positions(
             self._standing_joint_targets,
             self._leg_side_signs,
@@ -266,6 +273,23 @@ class LynxcGaitPlannerAdapter:
 
     def _get_command(self) -> torch.Tensor:
         return self._command
+
+    def _apply_startup_standing_blend(self, sim_joint_targets: torch.Tensor) -> torch.Tensor:
+        return sim_joint_targets
+
+    def _resolve_inner_knee_standing_joint_targets(self) -> torch.Tensor:
+        foot_targets = torch.stack(
+            (
+                torch.full_like(self._leg_side_signs, float(self.cfg.center_offset)),
+                self._leg_side_signs * float(self.cfg.l_coxa),
+                torch.full_like(self._leg_side_signs, float(self.cfg.ground_height)),
+            ),
+            dim=-1,
+        )
+        standing_joint_targets, valid_ik = self._generator.solve_ik(foot_targets, self._leg_side_signs)
+        if not bool(valid_ik.all()):
+            raise RuntimeError("Failed to derive a valid inner-knee Lynxc standing pose from default foot targets.")
+        return standing_joint_targets.to(dtype=torch.float64)
 
     def _maybe_log_debug(
         self,
@@ -362,15 +386,16 @@ def resolve_default_standing_pose_deg() -> tuple[float, float, float]:
         leg_order=LEG_ORDER,
         side_signs=side_signs,
         phase_offsets=[0.0, math.pi, math.pi, 0.0],
+        knee_direction_signs=(-1.0, -1.0, 1.0, 1.0),
         device="cpu",
         dtype=torch.float64,
     )
     foot_targets = torch.tensor(
         [
-            [0.020, +L_COXA_M, -0.245],
-            [0.020, -L_COXA_M, -0.245],
-            [0.020, +L_COXA_M, -0.245],
-            [0.020, -L_COXA_M, -0.245],
+            [0.020, +L_COXA_M, -0.300],
+            [0.020, -L_COXA_M, -0.300],
+            [0.020, +L_COXA_M, -0.300],
+            [0.020, -L_COXA_M, -0.300],
         ],
         dtype=torch.float64,
     )
@@ -381,15 +406,18 @@ def resolve_default_standing_pose_deg() -> tuple[float, float, float]:
     return float(standing_deg[0]), float(standing_deg[1]), float(standing_deg[2])
 
 
-def build_action_cfg() -> QuadrupedGaitActionCfg:
+def build_action_cfg(gait_type: str = "trot") -> QuadrupedGaitActionCfg:
     standing_haa_deg, standing_hfe_deg, standing_kfe_deg = resolve_default_standing_pose_deg()
 
     cfg = QuadrupedGaitActionCfg()
+    cfg.gait_type = gait_type
     cfg.l_coxa = L_COXA_M
     cfg.l_femur = L_FEMUR_M
     cfg.l_tibia = L_TIBIA_M
     cfg.femur_zero_angle_global_deg = 90.0
     cfg.tibia_zero_angle_relative_deg = 180.0
+    cfg.default_knee_direction = "inward"
+    cfg.derive_standing_pose_from_ik = True
     cfg.standing_haa_deg = standing_haa_deg
     cfg.standing_hfe_deg = standing_hfe_deg
     cfg.standing_kfe_deg = standing_kfe_deg
@@ -400,7 +428,7 @@ def build_action_cfg() -> QuadrupedGaitActionCfg:
     cfg.step_frequency = 1.8
     cfg.step_direction = 1.0
     cfg.center_offset = 0.020
-    cfg.ground_height = -0.245
+    cfg.ground_height = -0.300
     cfg.stand_when_command_zero = True
     cfg.default_forward_command = 0.0
     cfg.command_speed_to_step_length = 0.020
@@ -570,43 +598,61 @@ def _is_headless_backend() -> bool:
 
 
 def run_animation() -> None:
-    cfg = build_action_cfg()
-    planner = LynxcGaitPlannerAdapter(cfg, COMMAND)
+    cfgs = {gait_type: build_action_cfg(gait_type) for gait_type in GAIT_TYPES}
+    planners = {gait_type: LynxcGaitPlannerAdapter(cfg, COMMAND) for gait_type, cfg in cfgs.items()}
+    reference_cfg = cfgs[GAIT_TYPES[0]]
 
     print(
         f"[ik_lynxc] backend={matplotlib.get_backend()} "
         f"DISPLAY={os.environ.get('DISPLAY')} "
-        f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}"
+        f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')} "
+        f"gaits={','.join(GAIT_TYPES)}"
     )
 
-    if _is_headless_backend():
-        frame = planner.step(gait_enabled=True)
-        hip_world_m = hip_world_positions_m()
-        frame["target_world_m"] = hip_world_m + frame["target_local_m"]
-        frame["fk_world_m"] = hip_world_m[:, None, :] + frame["fk_local_m"]
+    hip_world_m = hip_world_positions_m()
 
-        fig = plt.figure(figsize=(11, 6))
+    if _is_headless_backend():
+        frames = {}
+        for gait_type, planner in planners.items():
+            frame = planner.step(gait_enabled=True)
+            frame["target_world_m"] = hip_world_m + frame["target_local_m"]
+            frame["fk_world_m"] = hip_world_m[:, None, :] + frame["fk_local_m"]
+            frames[gait_type] = frame
+
+        fig = plt.figure(figsize=(12, 6))
         ax3d = fig.add_subplot(121, projection="3d")
         ax2d = fig.add_subplot(122)
-        for leg_idx, leg_name in enumerate(LEG_ORDER):
-            color = LEG_CONFIGS[leg_name]["color"]
-            leg_points_world_mm = frame["fk_world_m"][leg_idx] * MM_PER_M
-            target_world_mm = frame["target_world_m"][leg_idx] * MM_PER_M
-            ax3d.plot(leg_points_world_mm[:, 0], leg_points_world_mm[:, 1], leg_points_world_mm[:, 2], "-o", color=color)
-            ax3d.scatter([target_world_mm[0]], [target_world_mm[1]], [target_world_mm[2]], color=color, marker="x")
-            local_target_mm = frame["target_local_m"][leg_idx] * MM_PER_M
-            local_fk_mm = frame["fk_local_m"][leg_idx, -1] * MM_PER_M
-            ax2d.scatter([local_target_mm[0]], [local_target_mm[2]], color=color, marker="x")
-            ax2d.scatter([local_fk_mm[0]], [local_fk_mm[2]], color=color, marker="o")
+        vis_points = [hip_world_m * MM_PER_M]
+        for gait_type, frame in frames.items():
+            linestyle = GAIT_LINE_STYLES[gait_type]
+            marker = GAIT_MARKERS[gait_type]
+            alpha = GAIT_ALPHAS[gait_type]
+            for leg_idx, leg_name in enumerate(LEG_ORDER):
+                color = LEG_CONFIGS[leg_name]["color"]
+                leg_points_world_mm = frame["fk_world_m"][leg_idx] * MM_PER_M
+                target_world_mm = frame["target_world_m"][leg_idx] * MM_PER_M
+                ax3d.plot(
+                    leg_points_world_mm[:, 0],
+                    leg_points_world_mm[:, 1],
+                    leg_points_world_mm[:, 2],
+                    linestyle=linestyle,
+                    marker=marker,
+                    color=color,
+                    alpha=alpha,
+                    label=f"{gait_type} {leg_name}" if leg_idx == 0 else None,
+                )
+                ax3d.scatter([target_world_mm[0]], [target_world_mm[1]], [target_world_mm[2]], color=color, marker="x", alpha=alpha)
+                local_target_mm = frame["target_local_m"][leg_idx] * MM_PER_M
+                local_fk_mm = frame["fk_local_m"][leg_idx, -1] * MM_PER_M
+                ax2d.scatter([local_target_mm[0]], [local_target_mm[2]], color=color, marker="x", alpha=alpha)
+                ax2d.scatter([local_fk_mm[0]], [local_fk_mm[2]], color=color, marker=marker, alpha=alpha)
+            vis_points.append(frame["target_world_m"].reshape(-1, 3) * MM_PER_M)
+            vis_points.append(frame["fk_world_m"].reshape(-1, 3) * MM_PER_M)
         add_body(ax3d)
-        vis_points_mm = np.vstack([
-            hip_world_m * MM_PER_M,
-            frame["target_world_m"].reshape(-1, 3) * MM_PER_M,
-            frame["fk_world_m"].reshape(-1, 3) * MM_PER_M,
-        ])
-        x_lim, y_lim, _ = set_equal_axes(ax3d, vis_points_mm)
-        add_ground_plane(ax3d, x_lim, y_lim, cfg.ground_height * MM_PER_M)
-        ax3d.set_title("Lynxc gait preview")
+        x_lim, y_lim, _ = set_equal_axes(ax3d, np.vstack(vis_points))
+        add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_height * MM_PER_M)
+        ax3d.set_title("Lynxc gait preview: trot solid / walk dashed")
+        ax3d.legend(loc="upper left", fontsize=8)
         ax2d.set_title("Local x-z preview")
         ax2d.set_aspect("equal", adjustable="box")
         ax2d.grid(True, alpha=0.3)
@@ -633,64 +679,78 @@ def run_animation() -> None:
     zero_pose_world_dots = {}
     zero_pose_local_dots = {}
     artists = []
-    histories = _init_leg_histories()
+    histories = {gait_type: _init_leg_histories() for gait_type in GAIT_TYPES}
     history_reset_needed = {"value": True}
 
-    hip_world_m = hip_world_positions_m()
     vis_seed = [hip_world_m * MM_PER_M]
-    for leg_name in LEG_ORDER:
-        vis_seed.append((hip_world_m + np.array([[0.0, 0.0, cfg.ground_height]])).reshape(-1, 3) * MM_PER_M)
-    x_lim, y_lim, z_lim = set_equal_axes(ax3d, np.vstack(vis_seed), margin_mm=120.0)
+    for _leg_name in LEG_ORDER:
+        vis_seed.append((hip_world_m + np.array([[0.0, 0.0, reference_cfg.ground_height]])).reshape(-1, 3) * MM_PER_M)
+    x_lim, y_lim, _z_lim = set_equal_axes(ax3d, np.vstack(vis_seed), margin_mm=120.0)
+
+    for gait_type in GAIT_TYPES:
+        linestyle = GAIT_LINE_STYLES[gait_type]
+        marker = GAIT_MARKERS[gait_type]
+        alpha = GAIT_ALPHAS[gait_type]
+        for leg_name in LEG_ORDER:
+            key = (gait_type, leg_name)
+            color = LEG_CONFIGS[leg_name]["color"]
+            leg_line, = ax3d.plot(
+                [], [], [],
+                linestyle=linestyle,
+                marker=marker,
+                linewidth=3,
+                color=color,
+                alpha=alpha,
+                markersize=5,
+                label=f"{gait_type} {leg_name}",
+            )
+            target_dot = ax3d.scatter([], [], [], color=color, s=45, marker="x", alpha=alpha)
+            fk_dot = ax3d.scatter([], [], [], color=color, s=25, marker=marker, alpha=alpha)
+            target_path, = ax3d.plot([], [], [], color=color, alpha=0.25 * alpha, linewidth=1.2, linestyle=linestyle)
+            fk_path, = ax3d.plot([], [], [], color=color, alpha=0.75 * alpha, linewidth=1.2, linestyle=linestyle)
+            local_target_path, = ax2d.plot([], [], color=color, alpha=0.35 * alpha, linestyle=linestyle, linewidth=1.4)
+            local_fk_path, = ax2d.plot([], [], color=color, alpha=0.85 * alpha, linestyle=linestyle, linewidth=1.2, label=f"{gait_type} {leg_name}")
+            local_target_dot, = ax2d.plot([], [], marker="x", color=color, alpha=alpha, linestyle="None")
+            local_fk_dot, = ax2d.plot([], [], marker=marker, color=color, alpha=alpha, linestyle="None")
+
+            leg_lines[key] = leg_line
+            target_dots[key] = target_dot
+            fk_dots[key] = fk_dot
+            target_world_paths[key] = target_path
+            fk_world_paths[key] = fk_path
+            local_target_paths[key] = local_target_path
+            local_fk_paths[key] = local_fk_path
+            local_target_dots[key] = local_target_dot
+            local_fk_dots[key] = local_fk_dot
+            artists.extend([
+                leg_line,
+                target_dot,
+                fk_dot,
+                target_path,
+                fk_path,
+                local_target_path,
+                local_fk_path,
+                local_target_dot,
+                local_fk_dot,
+            ])
 
     for leg_name in LEG_ORDER:
         color = LEG_CONFIGS[leg_name]["color"]
-        leg_line, = ax3d.plot([], [], [], "-o", linewidth=3, color=color, markersize=5, label=f"{leg_name} leg")
-        target_dot = ax3d.scatter([], [], [], color=color, s=45, marker="x")
-        fk_dot = ax3d.scatter([], [], [], color=color, s=25, marker="o")
-        target_path, = ax3d.plot([], [], [], color=color, alpha=0.35, linewidth=1.2, linestyle="--", label=f"{leg_name} target")
-        fk_path, = ax3d.plot([], [], [], color=color, alpha=0.75, linewidth=1.2, linestyle="-", label=f"{leg_name} FK")
-        local_target_path, = ax2d.plot([], [], color=color, linestyle="--", linewidth=1.4, label=f"{leg_name} target")
-        local_fk_path, = ax2d.plot([], [], color=color, linestyle="-", linewidth=1.2, label=f"{leg_name} FK")
-        local_target_dot, = ax2d.plot([], [], marker="x", color=color, linestyle="None")
-        local_fk_dot, = ax2d.plot([], [], marker="o", color=color, linestyle="None")
         zero_pose_line, = ax3d.plot([], [], [], ":", linewidth=2, color=color, alpha=0.35, visible=False)
         zero_pose_world_dot = ax3d.scatter([], [], [], color=color, s=35, marker="s", alpha=0.35, visible=False)
         zero_pose_local_dot, = ax2d.plot([], [], marker="s", color=color, linestyle="None", alpha=0.35, visible=False)
-
-        leg_lines[leg_name] = leg_line
-        target_dots[leg_name] = target_dot
-        fk_dots[leg_name] = fk_dot
-        target_world_paths[leg_name] = target_path
-        fk_world_paths[leg_name] = fk_path
-        local_target_paths[leg_name] = local_target_path
-        local_fk_paths[leg_name] = local_fk_path
-        local_target_dots[leg_name] = local_target_dot
-        local_fk_dots[leg_name] = local_fk_dot
         zero_pose_lines[leg_name] = zero_pose_line
         zero_pose_world_dots[leg_name] = zero_pose_world_dot
         zero_pose_local_dots[leg_name] = zero_pose_local_dot
-        artists.extend([
-            leg_line,
-            target_dot,
-            fk_dot,
-            target_path,
-            fk_path,
-            local_target_path,
-            local_fk_path,
-            local_target_dot,
-            local_fk_dot,
-            zero_pose_line,
-            zero_pose_world_dot,
-            zero_pose_local_dot,
-        ])
+        artists.extend([zero_pose_line, zero_pose_world_dot, zero_pose_local_dot])
 
     add_body(ax3d)
-    add_ground_plane(ax3d, x_lim, y_lim, cfg.ground_height * MM_PER_M)
+    add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_height * MM_PER_M)
     ax3d.set_xlabel("X (mm, forward)")
     ax3d.set_ylabel("Y (mm, left)")
     ax3d.set_zlabel("Z (mm, up)")
-    ax3d.set_title("Lynxc Quadruped Gait Planner")
-    ax3d.legend(loc="upper left", fontsize=8)
+    ax3d.set_title("Lynxc Gait Comparison: trot solid / walk dashed")
+    ax3d.legend(loc="upper left", fontsize=7, ncol=2)
     ax3d.view_init(elev=24, azim=-48)
 
     ax2d.set_aspect("equal", adjustable="box")
@@ -700,7 +760,7 @@ def run_animation() -> None:
     ax2d.set_xlabel("Local X (mm)")
     ax2d.set_ylabel("Local Z (mm)")
     ax2d.set_title("Target vs FK Foot Path (local x-z)")
-    ax2d.legend(loc="best", fontsize=8, ncol=2)
+    ax2d.legend(loc="best", fontsize=7, ncol=2)
 
     info_text = ax2d.text(
         0.02,
@@ -743,12 +803,20 @@ def run_animation() -> None:
 
     gait_state = {"enabled": True}
     zero_pose_state = {"visible": False}
-    zero_pose_frame = planner.all_joint_zero_pose()
+    zero_pose_frame = planners[GAIT_TYPES[0]].all_joint_zero_pose()
     zero_pose_frame["target_world_m"] = hip_world_m + zero_pose_frame["target_local_m"]
     zero_pose_frame["fk_world_m"] = hip_world_m[:, None, :] + zero_pose_frame["fk_local_m"]
 
+    def reset_histories() -> None:
+        for gait_histories in histories.values():
+            for leg_history in gait_histories.values():
+                for key in leg_history:
+                    leg_history[key].clear()
+
     def on_slider_change(_value) -> None:
-        planner.set_manual_haa_offsets_deg(current_slider_values())
+        slider_values = current_slider_values()
+        for planner in planners.values():
+            planner.set_manual_haa_offsets_deg(slider_values)
         history_reset_needed["value"] = True
         fig.canvas.draw_idle()
 
@@ -758,44 +826,37 @@ def run_animation() -> None:
         gait_state["enabled"] = toggle_states[0]
         zero_pose_state["visible"] = toggle_states[1]
         if gait_state["enabled"] and not was_enabled:
-            planner.reset_gait_cycle()
+            for planner in planners.values():
+                planner.reset_gait_cycle()
         history_reset_needed["value"] = True
         fig.canvas.draw_idle()
 
     for slider in sliders.values():
         slider.on_changed(on_slider_change)
     toggles.on_clicked(on_toggle)
-    planner.set_manual_haa_offsets_deg(current_slider_values())
+    for planner in planners.values():
+        planner.set_manual_haa_offsets_deg(current_slider_values())
 
     def update(frame_idx):
         if history_reset_needed["value"]:
-            for leg_history in histories.values():
-                for key in leg_history:
-                    leg_history[key].clear()
+            reset_histories()
             history_reset_needed["value"] = False
 
-        frame = planner.step(gait_enabled=gait_state["enabled"])
-        frame["target_world_m"] = hip_world_m + frame["target_local_m"]
-        frame["fk_world_m"] = hip_world_m[:, None, :] + frame["fk_local_m"]
+        frames = {}
+        for gait_type, planner in planners.items():
+            frame = planner.step(gait_enabled=gait_state["enabled"])
+            frame["target_world_m"] = hip_world_m + frame["target_local_m"]
+            frame["fk_world_m"] = hip_world_m[:, None, :] + frame["fk_local_m"]
+            frames[gait_type] = frame
 
         info_lines = [
             f"frame={frame_idx:03d}",
             f"gait={'ON' if gait_state['enabled'] else 'OFF'} zero_pose={'ON' if zero_pose_state['visible'] else 'OFF'} cmd=({COMMAND[0]:+.3f},{COMMAND[1]:+.3f},{COMMAND[2]:+.3f})",
+            "style: trot=solid/o walk=dashed/^",
             "joint0 sim offsets=" + ", ".join(f"{leg}={sliders[leg].val:+.0f}" for leg in JOINT0_SLIDER_LEGS),
         ]
 
         for leg_idx, leg_name in enumerate(LEG_ORDER):
-            leg_points_world_mm = frame["fk_world_m"][leg_idx] * MM_PER_M
-            target_world_mm = frame["target_world_m"][leg_idx] * MM_PER_M
-            fk_world_mm = frame["fk_world_m"][leg_idx, -1] * MM_PER_M
-            target_local_mm = frame["target_local_m"][leg_idx] * MM_PER_M
-            fk_local_mm = frame["fk_local_m"][leg_idx, -1] * MM_PER_M
-
-            leg_lines[leg_name].set_data(leg_points_world_mm[:, 0], leg_points_world_mm[:, 1])
-            leg_lines[leg_name].set_3d_properties(leg_points_world_mm[:, 2])
-            target_dots[leg_name]._offsets3d = ([target_world_mm[0]], [target_world_mm[1]], [target_world_mm[2]])
-            fk_dots[leg_name]._offsets3d = ([fk_world_mm[0]], [fk_world_mm[1]], [fk_world_mm[2]])
-
             zero_leg_points_world_mm = zero_pose_frame["fk_world_m"][leg_idx] * MM_PER_M
             zero_target_world_mm = zero_pose_frame["target_world_m"][leg_idx] * MM_PER_M
             zero_target_local_mm = zero_pose_frame["target_local_m"][leg_idx] * MM_PER_M
@@ -807,25 +868,40 @@ def run_animation() -> None:
             zero_pose_world_dots[leg_name]._offsets3d = ([zero_target_world_mm[0]], [zero_target_world_mm[1]], [zero_target_world_mm[2]])
             zero_pose_local_dots[leg_name].set_data([zero_target_local_mm[0]], [zero_target_local_mm[2]])
 
-            target_world_hist = _append_history(histories[leg_name]["target_world"], target_world_mm)
-            fk_world_hist = _append_history(histories[leg_name]["fk_world"], fk_world_mm)
-            target_local_hist = _append_history(histories[leg_name]["target_local"], target_local_mm[[0, 2]])
-            fk_local_hist = _append_history(histories[leg_name]["fk_local"], fk_local_mm[[0, 2]])
+        for gait_type, frame in frames.items():
+            phase_summary = []
+            knee_x = frame["fk_local_m"][:, 2, 0]
+            inner_knee_ok = bool((knee_x[:2] < 0.0).all() and (knee_x[2:] > 0.0).all())
+            for leg_idx, leg_name in enumerate(LEG_ORDER):
+                key = (gait_type, leg_name)
+                leg_points_world_mm = frame["fk_world_m"][leg_idx] * MM_PER_M
+                target_world_mm = frame["target_world_m"][leg_idx] * MM_PER_M
+                fk_world_mm = frame["fk_world_m"][leg_idx, -1] * MM_PER_M
+                target_local_mm = frame["target_local_m"][leg_idx] * MM_PER_M
+                fk_local_mm = frame["fk_local_m"][leg_idx, -1] * MM_PER_M
 
-            target_world_paths[leg_name].set_data(target_world_hist[:, 0], target_world_hist[:, 1])
-            target_world_paths[leg_name].set_3d_properties(target_world_hist[:, 2])
-            fk_world_paths[leg_name].set_data(fk_world_hist[:, 0], fk_world_hist[:, 1])
-            fk_world_paths[leg_name].set_3d_properties(fk_world_hist[:, 2])
-            local_target_paths[leg_name].set_data(target_local_hist[:, 0], target_local_hist[:, 1])
-            local_fk_paths[leg_name].set_data(fk_local_hist[:, 0], fk_local_hist[:, 1])
-            local_target_dots[leg_name].set_data([target_local_mm[0]], [target_local_mm[2]])
-            local_fk_dots[leg_name].set_data([fk_local_mm[0]], [fk_local_mm[2]])
+                leg_lines[key].set_data(leg_points_world_mm[:, 0], leg_points_world_mm[:, 1])
+                leg_lines[key].set_3d_properties(leg_points_world_mm[:, 2])
+                target_dots[key]._offsets3d = ([target_world_mm[0]], [target_world_mm[1]], [target_world_mm[2]])
+                fk_dots[key]._offsets3d = ([fk_world_mm[0]], [fk_world_mm[1]], [fk_world_mm[2]])
 
-            sim_joint_deg = frame["sim_q_deg"][leg_idx]
-            zero_sim_joint_deg = zero_pose_frame["sim_q_deg"][leg_idx]
-            info_lines.append(
-                f"{leg_name} phase={frame['phase_deg'][leg_idx]:6.1f} q0={sim_joint_deg[0]:+6.1f} zero_q=({zero_sim_joint_deg[0]:+.1f},{zero_sim_joint_deg[1]:+.1f},{zero_sim_joint_deg[2]:+.1f}) fk=({fk_local_mm[0]:+6.1f},{fk_local_mm[2]:+6.1f})"
-            )
+                gait_histories = histories[gait_type][leg_name]
+                target_world_hist = _append_history(gait_histories["target_world"], target_world_mm)
+                fk_world_hist = _append_history(gait_histories["fk_world"], fk_world_mm)
+                target_local_hist = _append_history(gait_histories["target_local"], target_local_mm[[0, 2]])
+                fk_local_hist = _append_history(gait_histories["fk_local"], fk_local_mm[[0, 2]])
+
+                target_world_paths[key].set_data(target_world_hist[:, 0], target_world_hist[:, 1])
+                target_world_paths[key].set_3d_properties(target_world_hist[:, 2])
+                fk_world_paths[key].set_data(fk_world_hist[:, 0], fk_world_hist[:, 1])
+                fk_world_paths[key].set_3d_properties(fk_world_hist[:, 2])
+                local_target_paths[key].set_data(target_local_hist[:, 0], target_local_hist[:, 1])
+                local_fk_paths[key].set_data(fk_local_hist[:, 0], fk_local_hist[:, 1])
+                local_target_dots[key].set_data([target_local_mm[0]], [target_local_mm[2]])
+                local_fk_dots[key].set_data([fk_local_mm[0]], [fk_local_mm[2]])
+
+                phase_summary.append(f"{leg_name}:{frame['phase_deg'][leg_idx]:5.0f}")
+            info_lines.append(f"{gait_type:<4} inner_knee={'Y' if inner_knee_ok else 'N'} phases " + " ".join(phase_summary))
         info_text.set_text("\n".join(info_lines))
         return artists
 

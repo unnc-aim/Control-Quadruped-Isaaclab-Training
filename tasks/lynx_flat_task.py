@@ -16,14 +16,12 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from .mdp import QuadrupedGaitActionCfg
-from .mdp.quadruped_gait_generator import QuadrupedGaitGenerator, QuadrupedGeometry
+from .mdp import LynxGaitActionCfg
 from . import mdp as custom_mdp
 
 import sys
 from pathlib import Path
 
-import torch
 
 _PROJECT_PATH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_PATH))
@@ -31,57 +29,13 @@ from assets.Lynxc_CFG import Lynxc_CONFIG as _ROBOT_CONFIG
 
 DESIRED_BASE_HEIGHT_M = float(_ROBOT_CONFIG.init_state.pos[2])
 CPG_GROUND_HEIGHT_M = -0.30
-USE_ZERO_POSE_STANDING_TARGET = False
 LYNX_L_COXA_M = 0.075
 LYNX_L_FEMUR_M = math.sqrt(0.0602**2 + 0.22**2)
 LYNX_L_TIBIA_M = math.sqrt(0.303431**2 + 0.0455**2 + 0.03**2)
-LYNX_BODY_LENGTH_M = 0.260
-LYNX_BODY_WIDTH_M = 0.150
-LYNX_TERMINAL_CONTACT_BODIES = ["Foot_02", "Calf_02", "Calf", "Calf_03"]
-LYNX_HIP_BODIES = ["Hip", "Hip_03", "Hip_02", "Hip_01"]
-LYNX_THIGH_BODIES = ["Thigh_02", "Thigh", "Thigh_03", "Thigh_01"]
-LYNX_BASE_BODIES = ["Body"]
-
-
-def _resolve_lynx_standing_pose_deg() -> tuple[float, float, float]:
-    geometry = QuadrupedGeometry(
-        l_coxa=LYNX_L_COXA_M,
-        l_femur=LYNX_L_FEMUR_M,
-        l_tibia=LYNX_L_TIBIA_M,
-        femur_zero_angle_global=math.radians(90.0),
-        tibia_zero_angle_relative=math.radians(180.0),
-    )
-    side_signs = torch.tensor([+1.0, -1.0, +1.0, -1.0], dtype=torch.float64)
-    generator = QuadrupedGaitGenerator(
-        geometry=geometry,
-        leg_order=("FL", "FR", "RL", "RR"),
-        side_signs=side_signs,
-        phase_offsets=[0.0, math.pi, math.pi, 0.0],
-        device="cpu",
-        dtype=torch.float64,
-    )
-    foot_targets = torch.tensor(
-        [
-            [0.020, +LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
-            [0.020, -LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
-            [0.020, +LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
-            [0.020, -LYNX_L_COXA_M, CPG_GROUND_HEIGHT_M],
-        ],
-        dtype=torch.float64,
-    )
-    standing_targets, valid_ik = generator.solve_ik(foot_targets, side_signs)
-    if not bool(valid_ik.all()):
-        raise RuntimeError("Failed to derive a valid Lynx standing pose.")
-    standing_deg = torch.rad2deg(standing_targets[0]).tolist()
-    return float(standing_deg[0]), float(standing_deg[1]), float(standing_deg[2])
-
-
-if USE_ZERO_POSE_STANDING_TARGET:
-    LYNX_STANDING_HAA_DEG = 0.0
-    LYNX_STANDING_HFE_DEG = 0.0
-    LYNX_STANDING_KFE_DEG = 0.0
-else:
-    LYNX_STANDING_HAA_DEG, LYNX_STANDING_HFE_DEG, LYNX_STANDING_KFE_DEG = _resolve_lynx_standing_pose_deg()
+LYNX_TERMINAL_CONTACT_BODIES = ["Foot", "Calf_01", "Calf_02", "Calf"]
+LYNX_HIP_BODIES = ["Hip_01", "Hip_03", "Hip_02", "Hip"]
+LYNX_THIGH_BODIES = ["Thigh", "Thigh_03", "Thigh_02", "Thigh_01"]
+LYNX_BASE_BODIES = ["Body_FOR_URDF"]
 
 
 @configclass
@@ -104,8 +58,9 @@ class LynxSceneCfg(InteractiveSceneCfg):
         init_state=_ROBOT_CONFIG.init_state.replace(pos=(0.0, 0.0, DESIRED_BASE_HEIGHT_M)),
     )
     contact_sensor = ContactSensorCfg(
-        # LynxC.usd is composed under /Robot/LynxC/* and the collision bodies live below that subtree.
-        prim_path="{ENV_REGEX_NS}/Robot/LynxC/.*",
+        # The USD default prim (/LynxC) is mapped directly onto /Robot when referenced.
+        # Its LynxC_URDF children therefore appear under /Robot/LynxC_URDF/* in the scene.
+        prim_path="{ENV_REGEX_NS}/Robot/LynxC_URDF/.*",
         history_length=3,
         track_air_time=True,
     )
@@ -132,19 +87,17 @@ class CommandsCfg:
 
 @configclass
 class ActionsCfg:
-    cpg = QuadrupedGaitActionCfg(
+    cpg = LynxGaitActionCfg(
         asset_name="robot",
         l_coxa=LYNX_L_COXA_M,
         l_femur=LYNX_L_FEMUR_M,
         l_tibia=LYNX_L_TIBIA_M,
-        body_length=LYNX_BODY_LENGTH_M,
-        body_width=LYNX_BODY_WIDTH_M,
         joint_names=[".*"],
-        step_height=0.040,
-        step_length=0.014,
+        step_height=0.030,
+        step_length=0.020,
         step_frequency=2.5,
         step_direction=1.0,
-        gait_type="trot",
+        gait_type="walk",
         step_height_min=0.0,
         step_height_max=0.080,
         step_length_min=0.0,
@@ -162,58 +115,34 @@ class ActionsCfg:
         step_frequency_residual_scale=0.2,
         turn_rate_residual_scale=0.1,
         debug_print_enabled=False,
-        lock_base_in_air=False,
+        lock_base_in_air=True,
+        lock_base_height=DESIRED_BASE_HEIGHT_M,
         startup_standing_blend_duration_s=0.35,
-        femur_zero_angle_global_deg=90.0,
-        tibia_zero_angle_relative_deg=180.0,
-        standing_haa_deg=LYNX_STANDING_HAA_DEG,
-        standing_hfe_deg=LYNX_STANDING_HFE_DEG,
-        standing_kfe_deg=LYNX_STANDING_KFE_DEG,
-        center_offset=0.020,
-        ground_height=CPG_GROUND_HEIGHT_M,
+        center_x=0.020,
+        ground_z=CPG_GROUND_HEIGHT_M,
         legs_config={
             "FL": {
                 "coxa": "FL0",
                 "femur": "FL1",
                 "tibia": "FL2",
-                "phase_offset_deg": 0.0,
-                "side": "left",
-                "haa_sign": +1.0,
-                "hfe_sign": +1.0,
-                "kfe_sign": +1.0,
                 "hip_xy": (0.126157, 0.075),
             },
             "FR": {
                 "coxa": "FR0",
                 "femur": "FR1",
                 "tibia": "FR2",
-                "phase_offset_deg": 180.0,
-                "side": "right",
-                "haa_sign": -1.0,
-                "hfe_sign": -1.0,
-                "kfe_sign": -1.0,
                 "hip_xy": (0.126157, -0.075),
             },
             "RL": {
                 "coxa": "RL0",
                 "femur": "RL1",
                 "tibia": "RL2",
-                "phase_offset_deg": 180.0,
-                "side": "left",
-                "haa_sign": +1.0,
-                "hfe_sign": +1.0,
-                "kfe_sign": +1.0,
                 "hip_xy": (-0.133843, 0.075),
             },
             "RR": {
                 "coxa": "RR0",
                 "femur": "RR1",
                 "tibia": "RR2",
-                "phase_offset_deg": 0.0,
-                "side": "right",
-                "haa_sign": -1.0,
-                "hfe_sign": -1.0,
-                "kfe_sign": -1.0,
                 "hip_xy": (-0.133843, -0.075),
             },
         },
@@ -260,7 +189,7 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
+            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0), "yaw": (0.0, 0.0)},
             "velocity_range": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),

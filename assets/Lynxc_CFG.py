@@ -8,7 +8,7 @@ _PROJECT_PATH = Path(__file__).resolve().parents[1]
 
 Lynxc_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=str(_PROJECT_PATH / "assets" / "LynxC.usd"),
+        usd_path=str(_PROJECT_PATH / "assets" / "LynxC_fixed.usd"),
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             rigid_body_enabled=True,
@@ -26,10 +26,10 @@ Lynxc_CONFIG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.4),
+        pos=(0.0, 0.0, 0.6),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
-        rot=(0.7071068, 0.0, 0.7071068, 0.0)
+        # rot=(0.7071068, 0.0, 0.7071068, 0.0)
     ),
     actuators={
         "all_joints": ImplicitActuatorCfg(

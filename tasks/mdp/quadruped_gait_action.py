@@ -10,7 +10,13 @@ from isaaclab.assets.articulation import Articulation
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.utils import configclass
 
-from .quadruped_gait_generator import QuadrupedGaitGenerator, QuadrupedGeometry
+from .quadruped_gait_generator import (
+    KNEE_DIRECTION_BACKWARD,
+    KNEE_DIRECTION_FORWARD,
+    KNEE_DIRECTION_LEGACY,
+    QuadrupedGaitGenerator,
+    QuadrupedGeometry,
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -80,6 +86,7 @@ class QuadrupedGaitAction(ActionTerm):
         leg_phase_offsets: list[float] = []
         leg_hip_xy: list[tuple[float, float]] = []
         leg_joint_signs: list[tuple[float, float, float]] = []
+        leg_knee_direction_signs: list[float] = []
 
         enabled_leg_names = set(cfg.enabled_leg_names) if cfg.enabled_leg_names is not None else None
         for leg_name, leg_conf in cfg.legs_config.items():
@@ -95,7 +102,8 @@ class QuadrupedGaitAction(ActionTerm):
 
             side_sign = self._side_sign_from_config(leg_conf)
             hip_xy = self._hip_xy_from_config(leg_name, leg_conf, side_sign)
-            phase_offset = math.radians(float(leg_conf.get("phase_offset_deg", 0.0)))
+            phase_offset = self._phase_offset_from_config(leg_name, leg_conf)
+            knee_direction_sign = self._knee_direction_sign_from_config(leg_name, leg_conf)
             joint_signs = (
                 float(leg_conf.get("haa_sign", 1.0)),
                 float(leg_conf.get("hfe_sign", 1.0)),
@@ -112,6 +120,7 @@ class QuadrupedGaitAction(ActionTerm):
                     "phase_offset": phase_offset,
                     "hip_xy": hip_xy,
                     "joint_signs": joint_signs,
+                    "knee_direction_sign": knee_direction_sign,
                 }
             )
             leg_names.append(leg_name)
@@ -119,6 +128,7 @@ class QuadrupedGaitAction(ActionTerm):
             leg_phase_offsets.append(phase_offset)
             leg_hip_xy.append(hip_xy)
             leg_joint_signs.append(joint_signs)
+            leg_knee_direction_signs.append(knee_direction_sign)
 
         self._leg_count = len(self.legs)
         self._generator = QuadrupedGaitGenerator(
@@ -126,6 +136,8 @@ class QuadrupedGaitAction(ActionTerm):
             leg_order=tuple(leg_names),
             side_signs=leg_side_signs,
             phase_offsets=leg_phase_offsets,
+            knee_direction_signs=leg_knee_direction_signs,
+            gait_type=cfg.gait_type,
             device=self.device,
             dtype=torch.float32,
         )
@@ -137,6 +149,9 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_side_signs = torch.tensor(leg_side_signs, device=self.device, dtype=torch.float32)
             self._leg_hip_xy = torch.tensor(leg_hip_xy, device=self.device, dtype=torch.float32)
             self._leg_joint_signs = torch.tensor(leg_joint_signs, device=self.device, dtype=torch.float32)
+            self._leg_knee_direction_signs = torch.tensor(
+                leg_knee_direction_signs, device=self.device, dtype=torch.float32
+            )
             self._leg_coxa_indices = torch.tensor([leg["coxa_idx"] for leg in self.legs], device=self.device)
             self._leg_femur_indices = torch.tensor([leg["femur_idx"] for leg in self.legs], device=self.device)
             self._leg_tibia_indices = torch.tensor([leg["tibia_idx"] for leg in self.legs], device=self.device)
@@ -159,6 +174,7 @@ class QuadrupedGaitAction(ActionTerm):
             self._leg_side_signs = torch.zeros(0, device=self.device, dtype=torch.float32)
             self._leg_hip_xy = torch.zeros(0, 2, device=self.device, dtype=torch.float32)
             self._leg_joint_signs = torch.zeros(0, 3, device=self.device, dtype=torch.float32)
+            self._leg_knee_direction_signs = torch.zeros(0, device=self.device, dtype=torch.float32)
             self._leg_coxa_indices = torch.zeros(0, device=self.device, dtype=torch.long)
             self._leg_femur_indices = torch.zeros(0, device=self.device, dtype=torch.long)
             self._leg_tibia_indices = torch.zeros(0, device=self.device, dtype=torch.long)
@@ -387,6 +403,9 @@ class QuadrupedGaitAction(ActionTerm):
         )
 
     def _resolve_standing_joint_targets(self) -> torch.Tensor | None:
+        if self.cfg.derive_standing_pose_from_ik:
+            return self._resolve_standing_joint_targets_from_ik()
+
         standing_fields = (
             self.cfg.standing_haa_deg,
             self.cfg.standing_hfe_deg,
@@ -408,6 +427,30 @@ class QuadrupedGaitAction(ActionTerm):
             dtype=torch.float32,
         )
         return standing_joint_targets.unsqueeze(0).repeat(self._leg_count, 1)
+
+    def _resolve_standing_joint_targets_from_ik(self) -> torch.Tensor:
+        if self.cfg.center_offset is None:
+            raise ValueError(
+                "derive_standing_pose_from_ik requires center_offset to define the standing foot X position."
+            )
+        foot_targets = torch.stack(
+            (
+                torch.full_like(self._leg_side_signs, float(self.cfg.center_offset)),
+                self._leg_side_signs * float(self.cfg.l_coxa),
+                torch.full_like(self._leg_side_signs, float(self.cfg.ground_height)),
+            ),
+            dim=-1,
+        )
+        standing_joint_targets, valid_ik = self._generator.solve_ik(foot_targets, self._leg_side_signs)
+        if not bool(valid_ik.all()):
+            invalid_legs = [
+                self.legs[idx]["name"] for idx in range(self._leg_count) if not bool(valid_ik[idx].item())
+            ]
+            raise ValueError(
+                "Could not derive standing pose from IK for legs "
+                f"{invalid_legs}; check center_offset, ground_height, and link lengths."
+            )
+        return standing_joint_targets
 
     def _warn_if_degenerate_joint_limits(self) -> None:
         limits = self._get_joint_limits_tensor()
@@ -598,6 +641,39 @@ class QuadrupedGaitAction(ActionTerm):
                 f"ik={'Y' if bool(valid_ik[env_idx, leg_idx].item()) else 'N'}"
             )
 
+    def _phase_offset_from_config(self, leg_name: str, leg_conf: dict) -> float:
+        if str(self.cfg.gait_type).lower() == "walk":
+            return QuadrupedGaitGenerator.default_phase_offsets("walk", (leg_name,))[0]
+        return math.radians(float(leg_conf.get("phase_offset_deg", 0.0)))
+
+    def _knee_direction_sign_from_config(self, leg_name: str, leg_conf: dict) -> float:
+        value = leg_conf.get("knee_direction", self.cfg.default_knee_direction)
+        if isinstance(value, (int, float)):
+            if float(value) < 0.0:
+                return KNEE_DIRECTION_BACKWARD
+            if float(value) > 0.0:
+                return KNEE_DIRECTION_FORWARD
+            return KNEE_DIRECTION_LEGACY
+
+        normalized = str(value).strip().lower()
+        if normalized in {"legacy", "default", "none"}:
+            return KNEE_DIRECTION_LEGACY
+        if normalized in {"backward", "back", "rearward"}:
+            return KNEE_DIRECTION_BACKWARD
+        if normalized in {"forward", "front"}:
+            return KNEE_DIRECTION_FORWARD
+
+        name_upper = leg_name.upper()
+        is_front = name_upper.startswith("F") or "FRONT" in str(leg_conf.get("coxa", "")).upper()
+        if normalized == "inward":
+            return KNEE_DIRECTION_BACKWARD if is_front else KNEE_DIRECTION_FORWARD
+        if normalized == "outward":
+            return KNEE_DIRECTION_FORWARD if is_front else KNEE_DIRECTION_BACKWARD
+        raise ValueError(
+            f"Unsupported knee_direction {value!r} for leg {leg_name}. "
+            "Expected legacy, inward, outward, forward, or backward."
+        )
+
     def _side_sign_from_config(self, leg_conf: dict) -> float:
         if "side_sign" in leg_conf:
             return 1.0 if float(leg_conf["side_sign"]) >= 0.0 else -1.0
@@ -632,6 +708,10 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     femur_zero_angle_global_deg: float | None = None
     tibia_zero_angle_relative_deg: float | None = None
 
+    # IK knee branch: legacy keeps the historical branch; inward makes front knees back and rear knees forward.
+    default_knee_direction: str = "legacy"
+    derive_standing_pose_from_ik: bool = False
+
     # Deprecated compatibility fallbacks for zero-angle mapping.
     femur_rest_angle_global_deg: float | None = -40.0
     tibia_rest_angle_relative_deg: float | None = -100.0
@@ -656,7 +736,7 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     default_forward_command: float = 0.0
 
     # Compatibility fields kept so existing task cfgs can switch classes with small edits.
-    gait_type: str = "trot"
+    gait_type: str = "trot"  # Supported values: "trot" and "walk".
     swing_vel_limits: tuple[float, float] = (0.0, 0.0)
     stance_depth: float = 0.0
     swap_haa_hfe_targets: bool = False
@@ -691,7 +771,7 @@ class QuadrupedGaitActionCfg(ActionTermCfg):
     debug_env_index: int = 0
     clip_joint_targets: bool = True
     lock_base_in_air: bool = False
-    lock_base_height: float | None = 2
+    lock_base_height: float | None = None
     startup_standing_blend_duration_s: float = 0.0
 
     legs_config: dict = {

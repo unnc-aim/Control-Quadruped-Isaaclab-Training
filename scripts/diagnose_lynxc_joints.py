@@ -47,7 +47,7 @@ from isaaclab.sim import SimulationContext
 
 
 _PROJECT_PATH = Path(__file__).resolve().parents[1]
-_LYNXC_USD_PATH = _PROJECT_PATH / "assets" / "LynxC.usd"
+_LYNXC_USD_PATH = _PROJECT_PATH / "assets" / "LynxC_fixed.usd"
 
 LEG_ORDER = ("FL", "FR", "RL", "RR")
 LEG_JOINTS = {
@@ -57,10 +57,10 @@ LEG_JOINTS = {
     "RR": ("RR0", "RR1", "RR2"),
 }
 LEG_BODY_NAMES = {
-    "FL": ("Hip", "Thigh_02", "Foot_02"),
-    "FR": ("Hip_03", "Thigh", "Calf_02"),
-    "RL": ("Hip_02", "Thigh_03", "Calf"),
-    "RR": ("Hip_01", "Thigh_01", "Calf_03"),
+    "FL": ("Hip_01", "Thigh", "Foot"),
+    "FR": ("Hip_03", "Thigh_03", "Calf_01"),
+    "RL": ("Hip_02", "Thigh_02", "Calf_02"),
+    "RR": ("Hip", "Thigh_01", "Calf"),
 }
 JOINT_TO_LEG = {joint_name: leg_name for leg_name, joint_names in LEG_JOINTS.items() for joint_name in joint_names}
 
@@ -88,7 +88,7 @@ LYNXC_CFG = ArticulationCfg(
         pos=(0.0, 0.0, 0.3),
         joint_pos={".*": 0.0},
         joint_vel={".*": 0.0},
-        rot=(0.7071068, 0.0, 0.7071068, 0.0)
+        # rot=(0.7071068, 0.0, 0.7071068, 0.0)
     ),
     actuators={
         "all_joints": ImplicitActuatorCfg(

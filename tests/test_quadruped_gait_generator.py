@@ -113,3 +113,41 @@ def test_mastiff_joint_sign_table_maps_planner_targets_to_sim_space() -> None:
         dtype=torch.float64,
     )
     torch.testing.assert_close(sim_joint_targets, expected, atol=0.0, rtol=0.0)
+
+
+def test_inward_knee_configuration_selects_opposite_front_rear_branches() -> None:
+    geometry = QuadrupedGeometry(
+        l_coxa=0.075,
+        l_femur=math.sqrt(0.0602**2 + 0.22**2),
+        l_tibia=math.sqrt(0.303431**2 + 0.0455**2 + 0.03**2),
+        femur_zero_angle_global=math.radians(90.0),
+        tibia_zero_angle_relative=0.0,
+    )
+    side_signs = torch.tensor([1.0, -1.0, 1.0, -1.0], dtype=torch.float64)
+    generator = QuadrupedGaitGenerator(
+        geometry=geometry,
+        leg_order=("FL", "FR", "RL", "RR"),
+        side_signs=side_signs,
+        knee_direction_signs=(-1.0, -1.0, 1.0, 1.0),
+        device="cpu",
+        dtype=torch.float64,
+    )
+    foot_targets = torch.tensor(
+        [
+            [0.020, +0.075, -0.300],
+            [0.020, -0.075, -0.300],
+            [0.020, +0.075, -0.300],
+            [0.020, -0.075, -0.300],
+        ],
+        dtype=torch.float64,
+    )
+
+    joint_targets, valid_ik = generator.solve_ik(foot_targets, side_signs)
+    fk_points = generator.forward_kinematics(joint_targets, side_signs)
+    knee_x = fk_points[:, 2, 0]
+
+    assert bool(valid_ik.all())
+    assert bool((knee_x[:2] < 0.0).all())
+    assert bool((knee_x[2:] > 0.0).all())
+    torch.testing.assert_close(fk_points[:, -1, :], foot_targets, atol=1e-6, rtol=0.0)
+    assert bool((joint_targets.abs() <= math.pi + 1.0e-9).all())
