@@ -160,14 +160,14 @@ class LynxGaitGenerator:
         ))
         gamma = torch.atan2(h, x)
 
-        # Match ik_lynxc_quadruped_test.py inner-knee mode: front knees
-        # point toward -X and rear knees point toward +X in each hip frame.
+        # The imported Lynx articulation reverses the apparent front/rear knee
+        # branches, so use +X for front knees and -X for rear knees.
         knee_backward = self._planner_targets(theta1, gamma - alpha, math.pi - beta)
         knee_forward = self._planner_targets(theta1, gamma + alpha, beta - math.pi)
         is_front = torch.tensor(
             [name.startswith("F") for name in self.leg_order], device=foot_targets.device, dtype=torch.bool
         )
-        planner_targets = torch.where(is_front.unsqueeze(-1), knee_backward, knee_forward)
+        planner_targets = torch.where(is_front.unsqueeze(-1), knee_forward, knee_backward)
         return planner_targets, valid
 
     def planner_to_joint(self, planner_targets: torch.Tensor) -> torch.Tensor:

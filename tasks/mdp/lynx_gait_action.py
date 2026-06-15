@@ -322,7 +322,7 @@ class LynxGaitActionCfg(ActionTermCfg):
     center_x: float = 0.020
     ground_z: float = -0.300
     step_height: float = 0.030
-    step_length: float = 0.020
+    step_length: float = 0.050
     step_frequency: float = 2.5
     step_direction: float = 1.0
     stand_when_command_zero: bool = True

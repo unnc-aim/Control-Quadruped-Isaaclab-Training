@@ -25,8 +25,8 @@ def test_standing_ik_matches_inner_knee_geometry() -> None:
 
     assert bool(valid.all())
     torch.testing.assert_close(links[:, -1], feet, atol=1.0e-8, rtol=1.0e-8)
-    assert bool((links[:2, 2, 0] < 0.0).all())  # front knees point backward
-    assert bool((links[2:, 2, 0] > 0.0).all())  # rear knees point forward
+    assert bool((links[:2, 2, 0] > 0.0).all())  # front knees point forward
+    assert bool((links[2:, 2, 0] < 0.0).all())  # rear knees point backward
 
 
 def test_zero_pose_matches_lynxc_link_directions() -> None:

@@ -243,7 +243,7 @@ class LynxcGaitPlannerAdapter:
             leg_order=tuple(leg_names),
             side_signs=leg_side_signs,
             phase_offsets=leg_phase_offsets,
-            knee_direction_signs=[-1.0 if name.upper().startswith("F") else 1.0 for name in leg_names],
+            knee_direction_signs=[1.0 if name.upper().startswith("F") else -1.0 for name in leg_names],
             gait_type=cfg.gait_type,
             device=self.device,
             dtype=torch.float64,
@@ -386,7 +386,7 @@ def resolve_default_standing_pose_deg() -> tuple[float, float, float]:
         leg_order=LEG_ORDER,
         side_signs=side_signs,
         phase_offsets=[0.0, math.pi, math.pi, 0.0],
-        knee_direction_signs=(-1.0, -1.0, 1.0, 1.0),
+        knee_direction_signs=(1.0, 1.0, -1.0, -1.0),
         device="cpu",
         dtype=torch.float64,
     )
@@ -871,7 +871,7 @@ def run_animation() -> None:
         for gait_type, frame in frames.items():
             phase_summary = []
             knee_x = frame["fk_local_m"][:, 2, 0]
-            inner_knee_ok = bool((knee_x[:2] < 0.0).all() and (knee_x[2:] > 0.0).all())
+            inner_knee_ok = bool((knee_x[:2] > 0.0).all() and (knee_x[2:] < 0.0).all())
             for leg_idx, leg_name in enumerate(LEG_ORDER):
                 key = (gait_type, leg_name)
                 leg_points_world_mm = frame["fk_world_m"][leg_idx] * MM_PER_M
