@@ -96,8 +96,8 @@ def _load_mdp_modules():
     mdp_pkg.__path__ = [str(MDP_DIR)]
     sys.modules.setdefault("tasks.mdp", mdp_pkg)
 
-    generator_name = "tasks.mdp.quadruped_gait_generator"
-    generator_path = MDP_DIR / "quadruped_gait_generator.py"
+    generator_name = "tasks.mdp.lynx_gait_generator"
+    generator_path = MDP_DIR / "lynx_gait_generator.py"
     generator_spec = importlib.util.spec_from_file_location(generator_name, generator_path)
     if generator_spec is None or generator_spec.loader is None:
         raise RuntimeError(f"Failed to load {generator_name} from {generator_path}")
@@ -105,8 +105,8 @@ def _load_mdp_modules():
     sys.modules[generator_name] = generator_module
     generator_spec.loader.exec_module(generator_module)
 
-    action_name = "tasks.mdp.quadruped_gait_action"
-    action_path = MDP_DIR / "quadruped_gait_action.py"
+    action_name = "tasks.mdp.lynx_gait_action"
+    action_path = MDP_DIR / "lynx_gait_action.py"
     action_spec = importlib.util.spec_from_file_location(action_name, action_path)
     if action_spec is None or action_spec.loader is None:
         raise RuntimeError(f"Failed to load {action_name} from {action_path}")
@@ -117,10 +117,10 @@ def _load_mdp_modules():
 
 
 _generator_module, _action_module = _load_mdp_modules()
-QuadrupedGaitGenerator = _generator_module.QuadrupedGaitGenerator
-QuadrupedGeometry = _generator_module.QuadrupedGeometry
-QuadrupedGaitAction = _action_module.QuadrupedGaitAction
-QuadrupedGaitActionCfg = _action_module.QuadrupedGaitActionCfg
+LynxGaitGenerator = _generator_module.LynxGaitGenerator
+LynxGeometry = _generator_module.LynxGeometry
+LynxGaitAction = _action_module.LynxGaitAction
+LynxGaitActionCfg = _action_module.LynxGaitActionCfg
 
 MM_PER_M = 1000.0
 L_COXA_M = 0.075
@@ -161,210 +161,130 @@ class _NullAsset:
 
 
 class LynxcGaitPlannerAdapter:
-    _resolve_zero_angle_deg = QuadrupedGaitAction._resolve_zero_angle_deg
-    _resolve_standing_joint_targets = QuadrupedGaitAction._resolve_standing_joint_targets
-    _compute_turn_step = QuadrupedGaitAction._compute_turn_step
-    _phase_offset_from_config = QuadrupedGaitAction._phase_offset_from_config
-
-    def __init__(self, cfg: QuadrupedGaitActionCfg, command_xyz: np.ndarray):
+    def __init__(self, cfg: LynxGaitActionCfg, command_xyz: np.ndarray):
         self.cfg = cfg
         self.device = torch.device("cpu")
-        self.num_envs = 1
         self._dt = DT
-        self._step_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.float64)
-        self._lock_base_in_air = False
-        self._locked_root_pose = None
-        self._locked_root_vel = None
-        self._command = torch.tensor(command_xyz, dtype=torch.float64, device=self.device).unsqueeze(0)
-        self._asset = _NullAsset(num_joints=len(JOINT_NAME_ORDER))
-        self._last_debug = None
-
-        femur_zero_deg = self._resolve_zero_angle_deg(
-            cfg.femur_zero_angle_global_deg,
-            cfg.femur_rest_angle_global_deg,
-            "femur_zero_angle_global_deg",
-            "femur_rest_angle_global_deg",
-        )
-        tibia_zero_deg = self._resolve_zero_angle_deg(
-            cfg.tibia_zero_angle_relative_deg,
-            cfg.tibia_rest_angle_relative_deg,
-            "tibia_zero_angle_relative_deg",
-            "tibia_rest_angle_relative_deg",
-        )
-        geometry = QuadrupedGeometry(
-            l_coxa=cfg.l_coxa,
-            l_femur=cfg.l_femur,
-            l_tibia=cfg.l_tibia,
-            femur_zero_angle_global=math.radians(femur_zero_deg),
-            tibia_zero_angle_relative=math.radians(tibia_zero_deg),
-        )
-
-        self.legs: list[dict] = []
-        leg_names: list[str] = []
-        leg_side_signs: list[float] = []
-        leg_phase_offsets: list[float] = []
-        leg_hip_xy: list[tuple[float, float]] = []
-        leg_joint_signs: list[tuple[float, float, float]] = []
-
-        joint_name_to_idx = {name: idx for idx, name in enumerate(JOINT_NAME_ORDER)}
-        for leg_name, leg_conf in cfg.legs_config.items():
-            c_idx = joint_name_to_idx[leg_conf["coxa"]]
-            f_idx = joint_name_to_idx[leg_conf["femur"]]
-            t_idx = joint_name_to_idx[leg_conf["tibia"]]
-            side_sign = 1.0 if str(leg_conf.get("side", "left")).lower() == "left" else -1.0
-            phase_offset = self._phase_offset_from_config(leg_name, leg_conf)
-            hip_xy = tuple(float(v) for v in leg_conf.get("hip_xy", (0.0, side_sign * 0.075)))
-            joint_signs = (
-                float(leg_conf.get("haa_sign", 1.0)),
-                float(leg_conf.get("hfe_sign", 1.0)),
-                float(leg_conf.get("kfe_sign", 1.0)),
-            )
-            self.legs.append(
-                {
-                    "name": leg_name,
-                    "coxa_idx": c_idx,
-                    "femur_idx": f_idx,
-                    "tibia_idx": t_idx,
-                    "side_sign": side_sign,
-                    "phase_offset": phase_offset,
-                    "hip_xy": hip_xy,
-                    "joint_signs": joint_signs,
-                }
-            )
-            leg_names.append(leg_name)
-            leg_side_signs.append(side_sign)
-            leg_phase_offsets.append(phase_offset)
-            leg_hip_xy.append(hip_xy)
-            leg_joint_signs.append(joint_signs)
-
-        self._leg_count = len(self.legs)
-        self._generator = QuadrupedGaitGenerator(
-            geometry=geometry,
-            leg_order=tuple(leg_names),
-            side_signs=leg_side_signs,
-            phase_offsets=leg_phase_offsets,
-            knee_direction_signs=[1.0 if name.upper().startswith("F") else -1.0 for name in leg_names],
+        self._command = torch.tensor(command_xyz, dtype=torch.float64).unsqueeze(0)
+        self.legs = list(cfg.legs_config)
+        self._generator = LynxGaitGenerator(
+            geometry=LynxGeometry(cfg.l_coxa, cfg.l_femur, cfg.l_tibia),
+            leg_order=tuple(self.legs),
             gait_type=cfg.gait_type,
             device=self.device,
             dtype=torch.float64,
         )
-        self._leg_phases = torch.tensor(leg_phase_offsets, device=self.device, dtype=torch.float64).unsqueeze(0)
-        self._initial_leg_phases = self._leg_phases[0].clone()
-        self._leg_side_signs = torch.tensor(leg_side_signs, device=self.device, dtype=torch.float64)
-        self._leg_hip_xy = torch.tensor(leg_hip_xy, device=self.device, dtype=torch.float64)
-        self._leg_joint_signs = torch.tensor(leg_joint_signs, device=self.device, dtype=torch.float64)
-        self._leg_coxa_indices = torch.tensor([leg["coxa_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
-        self._leg_femur_indices = torch.tensor([leg["femur_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
-        self._leg_tibia_indices = torch.tensor([leg["tibia_idx"] for leg in self.legs], device=self.device, dtype=torch.long)
-        self._standing_joint_targets = self._resolve_inner_knee_standing_joint_targets()
-        self._nominal_home_positions = self._generator.nominal_standing_foot_positions(
-            self._standing_joint_targets,
-            self._leg_side_signs,
+        self._leg_count = len(self.legs)
+        self._leg_phases = self._generator.phase_offsets.unsqueeze(0)
+        self._initial_leg_phases = self._generator.phase_offsets.clone()
+        self._leg_hip_xy = torch.tensor(
+            [cfg.legs_config[name]["hip_xy"] for name in self.legs], dtype=torch.float64
         )
+        self._standing_foot_targets = self._generator.standing_foot_targets(cfg.center_x, cfg.ground_z)
+        self._standing_planner_targets, valid = self._generator.solve_ik(self._standing_foot_targets)
+        if not bool(valid.all()):
+            raise RuntimeError("Failed to derive a valid Lynxc standing pose.")
+        self._manual_haa_offsets = torch.zeros(self._leg_count, dtype=torch.float64)
+        self.set_rl_actions(np.zeros(self._leg_count * LynxGaitAction.ACTIONS_PER_LEG))
 
-        self._processed_actions = torch.zeros(self.num_envs, len(JOINT_NAME_ORDER), device=self.device, dtype=torch.float64)
-        self._raw_actions = torch.zeros(self.num_envs, self._leg_count * 4, device=self.device, dtype=torch.float64)
-        residual_shape = (self.num_envs, self._leg_count)
-        self._step_height_residual = torch.zeros(residual_shape, device=self.device, dtype=torch.float64)
-        self._step_length_residual = torch.zeros(residual_shape, device=self.device, dtype=torch.float64)
-        self._frequency_residual = torch.zeros(residual_shape, device=self.device, dtype=torch.float64)
-        self._turn_rate_residual = torch.zeros(residual_shape, device=self.device, dtype=torch.float64)
-        self._manual_haa_sim_offsets_rad = torch.zeros(self._leg_count, device=self.device, dtype=torch.float64)
-
-    def _get_command(self) -> torch.Tensor:
-        return self._command
-
-    def _apply_startup_standing_blend(self, sim_joint_targets: torch.Tensor) -> torch.Tensor:
-        return sim_joint_targets
-
-    def _resolve_inner_knee_standing_joint_targets(self) -> torch.Tensor:
-        foot_targets = torch.stack(
-            (
-                torch.full_like(self._leg_side_signs, float(self.cfg.center_offset)),
-                self._leg_side_signs * float(self.cfg.l_coxa),
-                torch.full_like(self._leg_side_signs, float(self.cfg.ground_height)),
-            ),
-            dim=-1,
+    def set_rl_actions(self, actions: np.ndarray) -> None:
+        action = torch.as_tensor(actions, dtype=torch.float64).reshape(self._leg_count, 3).clamp(-1.0, 1.0)
+        self._length_residual = action[:, 0] * self.cfg.step_length_residual_scale
+        self._height_residual = action[:, 1] * self.cfg.step_height_residual_scale
+        self._trajectory_z = torch.clamp(
+            action[:, 2] * self.cfg.trajectory_z_residual_scale,
+            self.cfg.trajectory_z_min,
+            self.cfg.trajectory_z_max,
         )
-        standing_joint_targets, valid_ik = self._generator.solve_ik(foot_targets, self._leg_side_signs)
-        if not bool(valid_ik.all()):
-            raise RuntimeError("Failed to derive a valid inner-knee Lynxc standing pose from default foot targets.")
-        return standing_joint_targets.to(dtype=torch.float64)
-
-    def _maybe_log_debug(
-        self,
-        command: torch.Tensor,
-        step_vectors: torch.Tensor,
-        foot_targets: torch.Tensor,
-        raw_planner_joint_targets: torch.Tensor,
-        planner_joint_targets: torch.Tensor,
-        sim_joint_targets: torch.Tensor,
-        active_mask: torch.Tensor,
-        valid_ik: torch.Tensor,
-    ) -> None:
-        self._last_debug = {
-            "command": command.detach().cpu().clone(),
-            "step_vectors": step_vectors.detach().cpu().clone(),
-            "foot_targets": foot_targets.detach().cpu().clone(),
-            "raw_planner_joint_targets": raw_planner_joint_targets.detach().cpu().clone(),
-            "planner_joint_targets": planner_joint_targets.detach().cpu().clone(),
-            "sim_joint_targets": sim_joint_targets.detach().cpu().clone(),
-            "active_mask": active_mask.detach().cpu().clone(),
-            "valid_ik": valid_ik.detach().cpu().clone(),
-            "phases": self._leg_phases.detach().cpu().clone(),
-        }
 
     def set_manual_haa_offsets_deg(self, offsets_deg_by_leg: dict[str, float]) -> None:
-        values = []
-        for leg in self.legs:
-            leg_name = leg["name"]
-            sim_offset_rad = math.radians(float(offsets_deg_by_leg.get(leg_name, 0.0)))
-            planner_offset_rad = sim_offset_rad * leg["joint_signs"][0]
-            values.append(planner_offset_rad)
-        self._manual_haa_sim_offsets_rad = torch.tensor(values, device=self.device, dtype=torch.float64)
+        offsets = torch.tensor(
+            [math.radians(float(offsets_deg_by_leg.get(name, 0.0))) for name in self.legs],
+            dtype=torch.float64,
+        )
+        self._manual_haa_offsets = offsets * self._generator.joint_direction_signs[:, 0]
 
     def reset_gait_cycle(self) -> None:
-        self._step_counter.zero_()
-        self._leg_phases[0] = self._initial_leg_phases.clone()
+        self._leg_phases[0] = self._initial_leg_phases
 
     def step(self, gait_enabled: bool) -> dict[str, np.ndarray]:
         if gait_enabled:
-            QuadrupedGaitAction.apply_actions(self)
-            if self._last_debug is None:
-                raise RuntimeError("QuadrupedGaitAction.apply_actions did not produce debug tensors.")
-            planner_targets = self._last_debug["planner_joint_targets"][0].to(dtype=torch.float64).clone()
-            target_local = self._last_debug["foot_targets"][0].to(dtype=torch.float64)
-            valid_ik = self._last_debug["valid_ik"][0].detach().cpu().numpy()
-            phase_deg = np.degrees(self._last_debug["phases"][0].numpy())
+            cmd_x, cmd_y, cmd_yaw = self._command[0]
+            linear_speed = torch.sqrt(cmd_x**2 + cmd_y**2)
+            has_linear = bool(linear_speed > self.cfg.command_lin_speed_deadband)
+            if has_linear:
+                direction = torch.stack((cmd_x, cmd_y)) / linear_speed
+                base_length = max(
+                    self.cfg.step_length + float(linear_speed) * self.cfg.command_speed_to_step_length,
+                    self.cfg.command_min_step_length,
+                )
+            else:
+                direction = torch.tensor([1.0, 0.0], dtype=torch.float64)
+                base_length = self.cfg.step_length
+            lengths = torch.clamp(
+                base_length + self._length_residual, self.cfg.step_length_min, self.cfg.step_length_max
+            )
+            heights = torch.clamp(
+                self.cfg.step_height + self._height_residual,
+                self.cfg.step_height_min,
+                self.cfg.step_height_max,
+            )
+            frequency = min(
+                max(self.cfg.step_frequency + float(linear_speed) * self.cfg.command_speed_to_frequency,
+                    self.cfg.step_frequency_min),
+                self.cfg.step_frequency_max,
+            )
+            self._leg_phases = torch.remainder(
+                self._leg_phases + 2.0 * math.pi * frequency * self._dt, 2.0 * math.pi
+            )
+            active_lengths = lengths if has_linear or not self.cfg.stand_when_command_zero else torch.zeros_like(lengths)
+            step_vectors = self.cfg.step_direction * active_lengths.unsqueeze(-1) * direction
+            tangent = torch.stack((-self._leg_hip_xy[:, 1], self._leg_hip_xy[:, 0]), dim=-1)
+            tangent /= torch.clamp_min(torch.linalg.norm(tangent, dim=-1, keepdim=True), 1.0e-9)
+            turn_rate = float(torch.clamp(cmd_yaw * self.cfg.command_ang_vel_to_turn_rate, -1.0, 1.0))
+            step_vectors += self.cfg.yaw_step_length_max * turn_rate * tangent
+            has_step_motion = torch.linalg.norm(step_vectors, dim=-1) > self.cfg.command_lin_speed_deadband
+            gait_heights = torch.where(has_step_motion, heights, torch.zeros_like(heights))
+            planner_targets, target_local, valid = self._generator.joint_targets_from_phase(
+                self._leg_phases,
+                step_vectors.unsqueeze(0),
+                gait_heights.unsqueeze(0),
+                self._standing_foot_targets.unsqueeze(0),
+                trajectory_z_offsets=self._trajectory_z.unsqueeze(0),
+            )
+            planner_targets = planner_targets[0]
+            target_local = target_local[0]
+            valid = valid[0]
+            planner_targets = torch.where(
+                valid.unsqueeze(-1), planner_targets, self._standing_planner_targets
+            )
+            phase_deg = np.degrees(self._leg_phases[0].numpy())
         else:
-            planner_targets = self._standing_joint_targets.clone()
-            valid_ik = np.ones(self._leg_count, dtype=bool)
-            phase_deg = np.degrees(self._leg_phases[0].detach().cpu().numpy())
-            target_local = None
+            planner_targets = self._standing_planner_targets.clone()
+            target_local = self._standing_foot_targets.clone()
+            valid = torch.ones(self._leg_count, dtype=torch.bool)
+            phase_deg = np.degrees(self._leg_phases[0].numpy())
 
-        planner_targets[:, 0] += self._manual_haa_sim_offsets_rad
-        fk_points_local = self._generator.forward_kinematics(planner_targets, self._leg_side_signs)
-        if target_local is None:
-            target_local = fk_points_local[..., -1, :]
-
-        sim_targets = planner_targets * self._leg_joint_signs
+        planner_targets[:, 0] += self._manual_haa_offsets
+        fk_points_local = self._generator.forward_kinematics(planner_targets)
+        joint_targets = self._generator.planner_to_joint(planner_targets)
         return {
             "phase_deg": phase_deg,
-            "target_local_m": target_local.detach().cpu().numpy(),
-            "planner_q_deg": np.degrees(planner_targets.detach().cpu().numpy()),
-            "sim_q_deg": np.degrees(sim_targets.detach().cpu().numpy()),
-            "valid_ik": valid_ik,
-            "fk_local_m": fk_points_local.detach().cpu().numpy(),
+            "target_local_m": target_local.numpy(),
+            "planner_q_deg": np.degrees(planner_targets.numpy()),
+            "sim_q_deg": np.degrees(joint_targets.numpy()),
+            "valid_ik": valid.numpy(),
+            "fk_local_m": fk_points_local.numpy(),
         }
 
     def all_joint_zero_pose(self) -> dict[str, np.ndarray]:
-        planner_targets = torch.zeros_like(self._standing_joint_targets)
-        fk_points_local = self._generator.forward_kinematics(planner_targets, self._leg_side_signs)
+        planner_targets = torch.zeros_like(self._standing_planner_targets)
+        fk_points_local = self._generator.forward_kinematics(planner_targets)
         return {
-            "planner_q_deg": np.degrees(planner_targets.detach().cpu().numpy()),
-            "sim_q_deg": np.degrees((planner_targets * self._leg_joint_signs).detach().cpu().numpy()),
-            "target_local_m": fk_points_local[..., -1, :].detach().cpu().numpy(),
-            "fk_local_m": fk_points_local.detach().cpu().numpy(),
+            "planner_q_deg": np.degrees(planner_targets.numpy()),
+            "sim_q_deg": np.degrees(self._generator.planner_to_joint(planner_targets).numpy()),
+            "target_local_m": fk_points_local[..., -1, :].numpy(),
+            "fk_local_m": fk_points_local.numpy(),
         }
 
 
@@ -372,63 +292,18 @@ def hip_world_positions_m() -> np.ndarray:
     return np.stack([LEG_CONFIGS[leg_name]["hip"] for leg_name in LEG_ORDER], axis=0)
 
 
-def resolve_default_standing_pose_deg() -> tuple[float, float, float]:
-    geometry = QuadrupedGeometry(
-        l_coxa=L_COXA_M,
-        l_femur=L_FEMUR_M,
-        l_tibia=L_TIBIA_M,
-        femur_zero_angle_global=math.radians(90.0),
-        tibia_zero_angle_relative=math.radians(180.0),
-    )
-    side_signs = torch.tensor([+1.0, -1.0, +1.0, -1.0], dtype=torch.float64)
-    generator = QuadrupedGaitGenerator(
-        geometry=geometry,
-        leg_order=LEG_ORDER,
-        side_signs=side_signs,
-        phase_offsets=[0.0, math.pi, math.pi, 0.0],
-        knee_direction_signs=(1.0, 1.0, -1.0, -1.0),
-        device="cpu",
-        dtype=torch.float64,
-    )
-    foot_targets = torch.tensor(
-        [
-            [0.020, +L_COXA_M, -0.300],
-            [0.020, -L_COXA_M, -0.300],
-            [0.020, +L_COXA_M, -0.300],
-            [0.020, -L_COXA_M, -0.300],
-        ],
-        dtype=torch.float64,
-    )
-    standing_targets, valid_ik = generator.solve_ik(foot_targets, side_signs)
-    if not bool(valid_ik.all()):
-        raise RuntimeError("Failed to derive a valid Lynxc standing pose from default foot targets.")
-    standing_deg = torch.rad2deg(standing_targets[0]).tolist()
-    return float(standing_deg[0]), float(standing_deg[1]), float(standing_deg[2])
-
-
-def build_action_cfg(gait_type: str = "trot") -> QuadrupedGaitActionCfg:
-    standing_haa_deg, standing_hfe_deg, standing_kfe_deg = resolve_default_standing_pose_deg()
-
-    cfg = QuadrupedGaitActionCfg()
+def build_action_cfg(gait_type: str = "trot") -> LynxGaitActionCfg:
+    cfg = LynxGaitActionCfg()
     cfg.gait_type = gait_type
     cfg.l_coxa = L_COXA_M
     cfg.l_femur = L_FEMUR_M
     cfg.l_tibia = L_TIBIA_M
-    cfg.femur_zero_angle_global_deg = 90.0
-    cfg.tibia_zero_angle_relative_deg = 180.0
-    cfg.default_knee_direction = "inward"
-    cfg.derive_standing_pose_from_ik = True
-    cfg.standing_haa_deg = standing_haa_deg
-    cfg.standing_hfe_deg = standing_hfe_deg
-    cfg.standing_kfe_deg = standing_kfe_deg
-    cfg.body_length = 0.260
-    cfg.body_width = 0.150
     cfg.step_height = 0.040
     cfg.step_length = 0.090
     cfg.step_frequency = 1.8
     cfg.step_direction = 1.0
-    cfg.center_offset = 0.020
-    cfg.ground_height = -0.300
+    cfg.center_x = 0.020
+    cfg.ground_z = -0.300
     cfg.stand_when_command_zero = True
     cfg.default_forward_command = 0.0
     cfg.command_speed_to_step_length = 0.020
@@ -445,56 +320,17 @@ def build_action_cfg(gait_type: str = "trot") -> QuadrupedGaitActionCfg:
     cfg.step_frequency_max = 3.0
     cfg.step_height_residual_scale = 0.008
     cfg.step_length_residual_scale = 0.012
-    cfg.step_frequency_residual_scale = 0.2
-    cfg.turn_rate_residual_scale = 0.1
+    cfg.trajectory_z_residual_scale = 0.10
+    cfg.trajectory_z_min = -0.05
+    cfg.trajectory_z_max = 0.10
     cfg.debug_print_enabled = False
     cfg.clip_joint_targets = False
     cfg.lock_base_in_air = False
     cfg.legs_config = {
-        "FL": {
-            "coxa": "fl0",
-            "femur": "fl1",
-            "tibia": "fl2",
-            "phase_offset_deg": 0.0,
-            "side": "left",
-            "haa_sign": +1.0,
-            "hfe_sign": +1.0,
-            "kfe_sign": +1.0,
-            "hip_xy": (0.126157, 0.075),
-        },
-        "FR": {
-            "coxa": "fr0",
-            "femur": "fr1",
-            "tibia": "fr2",
-            "phase_offset_deg": 180.0,
-            "side": "right",
-            "haa_sign": -1.0,
-            "hfe_sign": -1.0,
-            "kfe_sign": -1.0,
-            "hip_xy": (0.126157, -0.075),
-        },
-        "RL": {
-            "coxa": "rl0",
-            "femur": "rl1",
-            "tibia": "rl2",
-            "phase_offset_deg": 180.0,
-            "side": "left",
-            "haa_sign": +1.0,
-            "hfe_sign": +1.0,
-            "kfe_sign": +1.0,
-            "hip_xy": (-0.133843, 0.075),
-        },
-        "RR": {
-            "coxa": "rr0",
-            "femur": "rr1",
-            "tibia": "rr2",
-            "phase_offset_deg": 0.0,
-            "side": "right",
-            "haa_sign": -1.0,
-            "hfe_sign": -1.0,
-            "kfe_sign": -1.0,
-            "hip_xy": (-0.133843, -0.075),
-        },
+        "FL": {"coxa": "fl0", "femur": "fl1", "tibia": "fl2", "hip_xy": (0.126157, 0.075)},
+        "FR": {"coxa": "fr0", "femur": "fr1", "tibia": "fr2", "hip_xy": (0.126157, -0.075)},
+        "RL": {"coxa": "rl0", "femur": "rl1", "tibia": "rl2", "hip_xy": (-0.133843, 0.075)},
+        "RR": {"coxa": "rr0", "femur": "rr1", "tibia": "rr2", "hip_xy": (-0.133843, -0.075)},
     }
     return cfg
 
@@ -606,7 +442,7 @@ def run_animation() -> None:
         f"[ik_lynxc] backend={matplotlib.get_backend()} "
         f"DISPLAY={os.environ.get('DISPLAY')} "
         f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')} "
-        f"gaits={','.join(GAIT_TYPES)}"
+        f"gaits={','.join(GAIT_TYPES)} action_dim={len(LEG_ORDER) * LynxGaitAction.ACTIONS_PER_LEG}"
     )
 
     hip_world_m = hip_world_positions_m()
@@ -650,7 +486,7 @@ def run_animation() -> None:
             vis_points.append(frame["fk_world_m"].reshape(-1, 3) * MM_PER_M)
         add_body(ax3d)
         x_lim, y_lim, _ = set_equal_axes(ax3d, np.vstack(vis_points))
-        add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_height * MM_PER_M)
+        add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_z * MM_PER_M)
         ax3d.set_title("Lynxc gait preview: trot solid / walk dashed")
         ax3d.legend(loc="upper left", fontsize=8)
         ax2d.set_title("Local x-z preview")
@@ -684,7 +520,7 @@ def run_animation() -> None:
 
     vis_seed = [hip_world_m * MM_PER_M]
     for _leg_name in LEG_ORDER:
-        vis_seed.append((hip_world_m + np.array([[0.0, 0.0, reference_cfg.ground_height]])).reshape(-1, 3) * MM_PER_M)
+        vis_seed.append((hip_world_m + np.array([[0.0, 0.0, reference_cfg.ground_z]])).reshape(-1, 3) * MM_PER_M)
     x_lim, y_lim, _z_lim = set_equal_axes(ax3d, np.vstack(vis_seed), margin_mm=120.0)
 
     for gait_type in GAIT_TYPES:
@@ -745,7 +581,7 @@ def run_animation() -> None:
         artists.extend([zero_pose_line, zero_pose_world_dot, zero_pose_local_dot])
 
     add_body(ax3d)
-    add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_height * MM_PER_M)
+    add_ground_plane(ax3d, x_lim, y_lim, reference_cfg.ground_z * MM_PER_M)
     ax3d.set_xlabel("X (mm, forward)")
     ax3d.set_ylabel("Y (mm, left)")
     ax3d.set_zlabel("Z (mm, up)")

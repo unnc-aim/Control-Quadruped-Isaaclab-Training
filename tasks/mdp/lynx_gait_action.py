@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 class LynxGaitAction(ActionTerm):
     """LynxC-only command gait action using the verified inner-knee IK convention."""
 
+    ACTIONS_PER_LEG = 3
+    ACTION_FIELDS = ("length", "step_height", "trajectory_z")
+
     cfg: LynxGaitActionCfg
     _asset: Articulation
 
@@ -98,14 +101,13 @@ class LynxGaitAction(ActionTerm):
             self.num_envs, self._leg_count, 3, device=self.device, dtype=torch.float32
         )
 
-        self._rl_action_dim = self._leg_count * 4
+        self._rl_action_dim = self._leg_count * self.ACTIONS_PER_LEG
         self._raw_actions = torch.zeros(self.num_envs, self._rl_action_dim, device=self.device)
         self._processed_actions = torch.zeros(self.num_envs, self._asset.num_joints, device=self.device)
         residual_shape = (self.num_envs, self._leg_count)
         self._height_residual = torch.zeros(residual_shape, device=self.device)
         self._length_residual = torch.zeros(residual_shape, device=self.device)
-        self._frequency_residual = torch.zeros(residual_shape, device=self.device)
-        self._turn_residual = torch.zeros(residual_shape, device=self.device)
+        self._trajectory_z_residual = torch.zeros(residual_shape, device=self.device)
 
         print(
             f"[LynxGaitAction] Initialized gait={self._generator.gait_type}; "
@@ -129,11 +131,12 @@ class LynxGaitAction(ActionTerm):
         if tuple(actions.shape) != expected:
             raise RuntimeError(f"Expected Lynx gait actions with shape {expected}, got {tuple(actions.shape)}.")
         self._raw_actions[:] = actions
-        by_leg = torch.clamp(actions, -1.0, 1.0).reshape(self.num_envs, self._leg_count, 4)
-        self._height_residual = by_leg[..., 0] * self.cfg.step_height_residual_scale
-        self._length_residual = by_leg[..., 1] * self.cfg.step_length_residual_scale
-        self._frequency_residual = by_leg[..., 2] * self.cfg.step_frequency_residual_scale
-        self._turn_residual = by_leg[..., 3] * self.cfg.turn_rate_residual_scale
+        by_leg = torch.clamp(actions, -1.0, 1.0).reshape(
+            self.num_envs, self._leg_count, self.ACTIONS_PER_LEG
+        )
+        self._length_residual = by_leg[..., 0] * self.cfg.step_length_residual_scale
+        self._height_residual = by_leg[..., 1] * self.cfg.step_height_residual_scale
+        self._trajectory_z_residual = by_leg[..., 2] * self.cfg.trajectory_z_residual_scale
 
     def apply_actions(self) -> None:
         self._step_counter += 1
@@ -170,12 +173,9 @@ class LynxGaitAction(ActionTerm):
             self.cfg.step_length_min,
             self.cfg.step_length_max,
         )
-        frequencies = torch.clamp(
-            base_frequency + self._frequency_residual,
-            self.cfg.step_frequency_min,
-            self.cfg.step_frequency_max,
-        )
-        turn_rates = torch.clamp(base_turn + self._turn_residual, -1.0, 1.0)
+        trajectory_z = self._clamp_trajectory_z(self._trajectory_z_residual)
+        frequencies = torch.clamp(base_frequency, self.cfg.step_frequency_min, self.cfg.step_frequency_max)
+        turn_rates = base_turn
         self._leg_phases = torch.remainder(
             self._leg_phases + 2.0 * math.pi * frequencies * self._dt,
             2.0 * math.pi,
@@ -192,18 +192,22 @@ class LynxGaitAction(ActionTerm):
             dim=-1,
         )
         step_vectors = linear_step + self._compute_turn_step(turn_rates)
-        active = (torch.linalg.norm(step_vectors, dim=-1) > self.cfg.command_lin_speed_deadband) & (
+        has_step_motion = (torch.linalg.norm(step_vectors, dim=-1) > self.cfg.command_lin_speed_deadband) & (
             frequencies > 1.0e-6
         )
+        has_trajectory_offset = torch.abs(trajectory_z) > 1.0e-6
+        active = has_step_motion | has_trajectory_offset
+        gait_heights = torch.where(has_step_motion, heights, torch.zeros_like(heights))
 
         planner_targets, foot_targets, valid = self._generator.joint_targets_from_phase(
             self._leg_phases,
             step_vectors,
-            heights,
+            gait_heights,
             self._standing_foot_targets.unsqueeze(0),
+            trajectory_z_offsets=trajectory_z,
         )
         standing = self._standing_planner_targets.unsqueeze(0).expand(self.num_envs, -1, -1)
-        planner_targets = torch.where(active.unsqueeze(-1) & valid.unsqueeze(-1), planner_targets, standing)
+        planner_targets = self._fallback_invalid_targets(planner_targets, active & valid, standing)
         joint_targets = self._generator.planner_to_joint(planner_targets)
         joint_targets = self._apply_startup_blend(joint_targets)
         if self.cfg.clip_joint_targets:
@@ -224,8 +228,7 @@ class LynxGaitAction(ActionTerm):
         self._step_counter[env_ids] = 0.0
         self._height_residual[env_ids] = 0.0
         self._length_residual[env_ids] = 0.0
-        self._frequency_residual[env_ids] = 0.0
-        self._turn_residual[env_ids] = 0.0
+        self._trajectory_z_residual[env_ids] = 0.0
         self._leg_phases[env_ids] = self._initial_leg_phases
 
         joint_pos = getattr(self._asset.data, "joint_pos", None)
@@ -248,6 +251,17 @@ class LynxGaitAction(ActionTerm):
         blended = torch.lerp(self._startup_blend_start, standing, alpha.view(-1, 1, 1))
         self._startup_blend_elapsed = torch.where(blending, next_elapsed, self._startup_blend_elapsed)
         return torch.where(blending.view(-1, 1, 1), blended, joint_targets)
+
+    def _clamp_trajectory_z(self, trajectory_z: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(trajectory_z, self.cfg.trajectory_z_min, self.cfg.trajectory_z_max)
+
+    @staticmethod
+    def _fallback_invalid_targets(
+        planner_targets: torch.Tensor,
+        valid: torch.Tensor,
+        standing_targets: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.where(valid.unsqueeze(-1), planner_targets, standing_targets)
 
     def _get_command(self) -> torch.Tensor:
         if hasattr(self._env, "command_manager"):
@@ -345,8 +359,9 @@ class LynxGaitActionCfg(ActionTermCfg):
 
     step_height_residual_scale: float = 0.008
     step_length_residual_scale: float = 0.012
-    step_frequency_residual_scale: float = 0.2
-    turn_rate_residual_scale: float = 0.1
+    trajectory_z_residual_scale: float = 0.10
+    trajectory_z_min: float = -0.05
+    trajectory_z_max: float = 0.10
 
     lock_base_in_air: bool = False
     lock_base_height: float | None = None

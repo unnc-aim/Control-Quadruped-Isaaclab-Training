@@ -112,8 +112,9 @@ class ActionsCfg:
         yaw_step_length_max=0.020,
         step_height_residual_scale=0.008,
         step_length_residual_scale=0.012,
-        step_frequency_residual_scale=0.2,
-        turn_rate_residual_scale=0.1,
+        trajectory_z_residual_scale=0.10,
+        trajectory_z_min=-0.05,
+        trajectory_z_max=0.10,
         debug_print_enabled=False,
         lock_base_in_air=False,
         lock_base_height=DESIRED_BASE_HEIGHT_M,
@@ -271,7 +272,7 @@ class RewardsCfg:
     # )
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-6)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0005)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.5)
 
 
 @configclass
@@ -282,14 +283,14 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=LYNX_BASE_BODIES), "threshold": 1.0},
     )
-    Hip_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=LYNX_HIP_BODIES), "threshold": 1.0},
-    )
-    Thigh_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=LYNX_THIGH_BODIES), "threshold": 500.0},
-    )
+    # Hip_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=LYNX_HIP_BODIES), "threshold": 1.0},
+    # )
+    # Thigh_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=LYNX_THIGH_BODIES), "threshold": 500.0},
+    # )
 
 
 @configclass

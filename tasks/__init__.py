@@ -1,6 +1,12 @@
 import gymnasium as gym
 from . import agents
-from .agents import LynxFlatPPORunnerCfg, MastiffFlatDirectPPORunnerCfg, MastiffFlatPPORunnerCfg, MastiffTerrainPPORunnerCfg
+from .agents import (
+    LynxFlatPPORunnerCfg,
+    LynxTerrainPPORunnerCfg,
+    MastiffFlatDirectPPORunnerCfg,
+    MastiffFlatPPORunnerCfg,
+    MastiffTerrainPPORunnerCfg,
+)
 ##
 # Register Gym environments.
 ##
@@ -42,6 +48,16 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.lynx_flat_task:LynxFlatEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.mastiff_rsl_rl_ppo:LynxFlatPPORunnerCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.lynx_rsl_rl_ppo:LynxFlatPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="lynx-terrain-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.lynx_terrain_task:LynxTerrainEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.lynx_rsl_rl_ppo:LynxTerrainPPORunnerCfg",
     },
 )

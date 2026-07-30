@@ -1,26 +1,23 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 
 @configclass
-class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class LynxFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 3000
     save_interval = 100
-    experiment_name = "mastiff-flat-v0"
+    experiment_name = "lynx-flat-v0"
     empirical_normalization = True
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
         activation="elu",
         obs_normalization=True,
-        # Keep hidden dims unchanged; action head size follows env action_dim automatically.
+        # RSL-RL derives the 12-output policy head from the environment action dimension.
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.5),
     )
     critic = RslRlMLPModelCfg(
@@ -43,18 +40,12 @@ class MastiffFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         max_grad_norm=1.0,
     )
 
-
 @configclass
-class MastiffFlatDirectPPORunnerCfg(MastiffFlatPPORunnerCfg):
-    experiment_name = "mastiff-flat-direct-v0"
-
-
-@configclass
-class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class LynxTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 100
-    experiment_name = "mastiff-terrain-v0"
+    experiment_name = "lynx-terrain-v0"
     empirical_normalization = True
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
@@ -83,3 +74,4 @@ class MastiffTerrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=0.5,     
     )
+

@@ -89,11 +89,13 @@ class LynxGaitGenerator:
         step_vectors: torch.Tensor,
         step_heights: torch.Tensor | float,
         home_positions: torch.Tensor,
+        trajectory_z_offsets: torch.Tensor | float = 0.0,
     ) -> torch.Tensor:
         phases = phases.to(device=self.device, dtype=self.dtype)
         step_vectors = step_vectors.to(device=self.device, dtype=self.dtype)
         home_positions = home_positions.to(device=self.device, dtype=self.dtype)
         heights = self._expand_param(step_heights, phases)
+        trajectory_z = self._expand_param(trajectory_z_offsets, phases)
 
         if self.gait_type == "walk":
             cycle = torch.remainder(phases, 2.0 * math.pi) / (2.0 * math.pi)
@@ -108,7 +110,10 @@ class LynxGaitGenerator:
             stride = 0.5 * torch.cos(phi)
             lift = torch.where(stance, torch.zeros_like(phi), heights * torch.sin(phi - math.pi))
 
-        targets = home_positions + torch.cat((step_vectors * stride.unsqueeze(-1), lift.unsqueeze(-1)), dim=-1)
+        z_displacement = trajectory_z + lift
+        targets = home_positions + torch.cat(
+            (step_vectors * stride.unsqueeze(-1), z_displacement.unsqueeze(-1)), dim=-1
+        )
         return targets
 
     def joint_targets_from_phase(
@@ -117,8 +122,15 @@ class LynxGaitGenerator:
         step_vectors: torch.Tensor,
         step_heights: torch.Tensor | float,
         home_positions: torch.Tensor,
+        trajectory_z_offsets: torch.Tensor | float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        foot_targets = self.phase_to_targets(phases, step_vectors, step_heights, home_positions)
+        foot_targets = self.phase_to_targets(
+            phases,
+            step_vectors,
+            step_heights,
+            home_positions,
+            trajectory_z_offsets=trajectory_z_offsets,
+        )
         planner_targets, valid = self.solve_ik(foot_targets)
         return planner_targets, foot_targets, valid
 

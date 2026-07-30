@@ -78,3 +78,39 @@ def test_walk_sequence_is_fl_rl_rr_fr() -> None:
     expected = torch.tensor([0.0, 0.5 * math.pi, 1.5 * math.pi, math.pi], dtype=torch.float64)
 
     torch.testing.assert_close(generator.phase_offsets, expected)
+
+
+def test_trajectory_z_offsets_shift_support_and_swing_paths() -> None:
+    generator = LynxGaitGenerator(gait_type="walk", dtype=torch.float64)
+    home = generator.standing_foot_targets(center_x=0.020, ground_z=-0.300).unsqueeze(0)
+    step_vectors = torch.zeros(1, 4, 2, dtype=torch.float64)
+    trajectory_z = torch.tensor([[-0.05, 0.0, 0.05, 0.10]], dtype=torch.float64)
+
+    stance_phases = torch.full((1, 4), math.pi, dtype=torch.float64)
+    stance_targets = generator.phase_to_targets(
+        stance_phases, step_vectors, 0.04, home, trajectory_z_offsets=trajectory_z
+    )
+    torch.testing.assert_close(stance_targets[..., 2], home[..., 2] + trajectory_z)
+
+    mid_swing_phases = torch.full((1, 4), math.pi / 4.0, dtype=torch.float64)
+    swing_targets = generator.phase_to_targets(
+        mid_swing_phases, step_vectors, 0.04, home, trajectory_z_offsets=trajectory_z
+    )
+    torch.testing.assert_close(swing_targets[..., 2], home[..., 2] + trajectory_z + 0.04)
+
+
+def test_per_leg_length_height_and_trajectory_are_independent() -> None:
+    generator = LynxGaitGenerator(gait_type="walk", dtype=torch.float64)
+    phases = torch.full((1, 4), math.pi / 4.0, dtype=torch.float64)
+    home = generator.standing_foot_targets(center_x=0.020, ground_z=-0.300).unsqueeze(0)
+    lengths = torch.tensor([[0.02, 0.04, 0.06, 0.08]], dtype=torch.float64)
+    step_vectors = torch.stack((lengths, torch.zeros_like(lengths)), dim=-1)
+    heights = torch.tensor([[0.01, 0.02, 0.03, 0.04]], dtype=torch.float64)
+    trajectory_z = torch.tensor([[-0.03, -0.01, 0.02, 0.05]], dtype=torch.float64)
+
+    targets = generator.phase_to_targets(
+        phases, step_vectors, heights, home, trajectory_z_offsets=trajectory_z
+    )
+
+    torch.testing.assert_close(targets[..., 0], home[..., 0])
+    torch.testing.assert_close(targets[..., 2], home[..., 2] + trajectory_z + heights)
